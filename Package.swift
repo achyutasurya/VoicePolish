@@ -11,9 +11,10 @@ let package = Package(
         .executableTarget(
             name: "VoicePolish",
             dependencies: ["KeyboardShortcuts"],
-            path: "VoiceInk",
+            path: "VoicePolish",
             resources: [
                 .process("Assets.xcassets"),
+                .copy("AppIcon.icns"),
             ]
         ),
     ]
