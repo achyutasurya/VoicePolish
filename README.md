@@ -76,13 +76,12 @@ swift build -c release
 
 ### Available LLM Models
 
-- **Mistral Nemo** (Recommended) - $0.02/1M input tokens, ~34 tokens/sec
-- Claude 3 Haiku - $0.25/1M input tokens, fastest response
-- Claude Sonnet 4 - High quality
+- **DeepSeek Chat** (Recommended) - Cost-effective, consistent results
+- Claude 3 Haiku - Fastest response, high quality
+- Claude Sonnet 4 - Premium quality
 - GPT-4o - OpenAI's latest
 - Gemini 2.5 Flash - Google's fast model
 - Llama 3.3 70B - Open source option
-- DeepSeek Chat - Cost-effective
 
 ### Temperature Settings
 
