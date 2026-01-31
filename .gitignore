@@ -1,0 +1,41 @@
+# Build artifacts
+.build/
+*.app/
+*.dSYM/
+build/
+DerivedData/
+
+# Xcode
+*.xcworkspace/
+xcuserdata/
+*.xcodeproj/
+*.pbxproj
+
+# Swift Package Manager
+Package.resolved
+.swiftpm/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+*.swiftpm
+
+# Environment variables (secrets)
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.gitkeep
+
+# Logs
+*.log
