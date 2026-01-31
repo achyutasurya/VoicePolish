@@ -1,3 +1,5 @@
+![VoicePolish Poster](assets/poster.png)
+
 # VoicePolish - AI-Powered Voice-to-Text Refiner for macOS
 
 > **Open Source** | Record your voice, transcribe with AI, and auto-paste refined text into any app
