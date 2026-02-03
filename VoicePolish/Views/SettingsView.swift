@@ -155,6 +155,11 @@ struct SettingsView: View {
                         .font(.subheadline.bold())
                     KeyboardShortcuts.Recorder("", name: .toggleRecording)
                 }
+                HStack {
+                    Text("Cancel Hotkey:")
+                        .font(.subheadline.bold())
+                    KeyboardShortcuts.Recorder("", name: .cancelRecording)
+                }
 
                 Divider()
 

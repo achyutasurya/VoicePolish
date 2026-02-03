@@ -11,11 +11,17 @@ swift build
 # Build release + create .app bundle (code-signed with Apple Development certificate)
 bash build.sh
 
-# Run the app
-open VoicePolish.app
+# Deploy to /Applications (the ONLY install location)
+osascript -e 'quit app "VoicePolish"' 2>/dev/null; sleep 1
+rm -rf /Applications/VoicePolish.app
+cp -R VoicePolish.app /Applications/
+rm -rf VoicePolish.app
+open /Applications/VoicePolish.app
 ```
 
-The build script creates `VoicePolish.app` in the project root by assembling an app bundle from the SPM release binary, Info.plist, and code-signing with `Apple Development: achyutasuryatej@icloud.com (4B3CUD9DRZ)`. This stable signing identity is required for macOS TCC (accessibility/microphone) permissions to persist across rebuilds.
+The build script creates `VoicePolish.app` in the project root as a temporary build artifact. **Always deploy to `/Applications/VoicePolish.app`** — do NOT leave the .app in the project directory or run it from there. After copying to /Applications, delete the local .app to avoid duplicates.
+
+The build script code-signs with `Apple Development: achyutasuryatej@icloud.com (4B3CUD9DRZ)`. This stable signing identity is required for macOS TCC (accessibility/microphone) permissions to persist across rebuilds.
 
 There are no tests or linting configured.
 
@@ -51,22 +57,37 @@ Accessibility permission is tied to the app's code signature in the TCC database
 
 ## Single External Dependency
 
-`KeyboardShortcuts` (sindresorhus, v2+) — global hotkey registration. The hotkey name `.toggleRecording` defaults to Cmd+] and is defined in `Utilities/HotkeyManager.swift`.
+`KeyboardShortcuts` (sindresorhus, v2+) — global hotkey registration. Hotkey names are defined in `Utilities/HotkeyManager.swift`:
+- `.toggleRecording` — defaults to Cmd+] (start/stop recording)
+- `.cancelRecording` — defaults to Cmd+[ (cancel recording without sending)
 
 ## Versioning
 
-Three-part scheme: **`MAJOR.DEPLOY.LOCAL`** (e.g. `0.1.1`).
+Three-part scheme: **`MAJOR.DEPLOY.LOCAL`** (e.g. `0.2.0`).
 
 - `MAJOR` — breaking changes / major milestones
 - `DEPLOY` — incremented on each production push; resets `LOCAL` to `0`
 - `LOCAL` — incremented on each local build/test cycle
 
-**Where the version lives (keep all three in sync):**
-1. `VERSION` file (project root) — single source of truth
-2. `VoicePolish/Utilities/AppVersion.swift` — `appVersion` constant read by the UI
-3. `VoicePolish/Info.plist` — `CFBundleShortVersionString`
+### Files to update when changing the version
 
-**When bumping:** update all three, then add an entry to `CHANGELOG.md`.
+All three must be kept in sync. Update them in this order:
+
+1. **`VERSION`** (project root) — single line, e.g. `0.2.0`. Source of truth.
+2. **`VoicePolish/Utilities/AppVersion.swift`** — change the `appVersion` string constant (displayed in the settings UI).
+3. **`VoicePolish/Info.plist`** — update `CFBundleShortVersionString` to the new version, and increment `CFBundleVersion` (integer build number) by 1.
+4. **`CHANGELOG.md`** — add a new entry under the version heading describing what changed.
+
+### Example: bumping from 0.2.0 to 0.2.1
+
+```
+VERSION:            0.2.0 → 0.2.1
+AppVersion.swift:   let appVersion = "0.2.1"
+Info.plist:         CFBundleShortVersionString: "0.2.1", CFBundleVersion: "5"
+CHANGELOG.md:       Add ## [0.2.1] section
+```
+
+After updating, rebuild and deploy to /Applications (see Build & Run above).
 
 ## Logging
 

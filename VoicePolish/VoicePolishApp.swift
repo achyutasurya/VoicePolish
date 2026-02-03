@@ -33,6 +33,9 @@ final class AppState {
         KeyboardShortcuts.onKeyDown(for: .toggleRecording) { [weak self] in
             self?.toggleRecordingPopup()
         }
+        KeyboardShortcuts.onKeyDown(for: .cancelRecording) { [weak self] in
+            self?.cancelRecordingFromHotkey()
+        }
         permissionManager.checkAndRequestPermissions()
         logger.info("VoicePolish started")
 
@@ -43,6 +46,17 @@ final class AppState {
         } catch {
             logger.error("Audio engine warm-up failed: \(error)")
         }
+    }
+
+    func cancelRecordingFromHotkey() {
+        let controller = RecordingPopupController.shared
+        guard controller.isShowing,
+              audioRecorder.state == .recording || audioRecorder.state == .paused else {
+            return
+        }
+        logger.info("Cancel hotkey pressed — cancelling recording")
+        audioRecorder.cancelRecording()
+        controller.closePopup(appState: self)
     }
 
     func toggleRecordingPopup() {
