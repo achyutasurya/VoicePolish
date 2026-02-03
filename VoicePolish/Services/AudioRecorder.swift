@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os
 
 // Thread-safe wrapper for AVAudioFile used from the audio tap callback
 private final class AudioFileWriter: @unchecked Sendable {
@@ -34,53 +35,103 @@ final class AudioRecorder {
     var recordingDuration: TimeInterval = 0
     var audioLevel: Float = 0
 
+    // MARK: - Engine (stays running at all times)
+
     private var audioEngine: AVAudioEngine?
+    private var cachedFormat: AVAudioFormat?
+    private var engineRunning = false
+
+    /// Atomic flag checked from the audio render thread.
+    /// When true, the tap callback writes buffers to the file writer.
+    /// When false, buffers are silently discarded.
+    private let isCapturing = OSAllocatedUnfairLock(initialState: false)
+
+    // MARK: - Recording state
+
     private var fileWriter: AudioFileWriter?
     private var tempFileURL: URL?
     private var timer: Timer?
     private var startTime: Date?
     private var accumulatedTime: TimeInterval = 0
+    private var configChangeObserver: NSObjectProtocol?
 
     private let logger = LoggingService.shared
 
-    func startRecording() throws {
+    // MARK: - Engine Lifecycle
+
+    /// Start the audio engine and install a permanent tap.
+    /// Called once at app launch and again after audio device changes.
+    /// The engine stays running — the tap discards buffers when not recording.
+    func warmUp() throws {
+        guard !engineRunning else {
+            logger.info("Audio engine already running, skipping warmUp")
+            return
+        }
+
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
-        let nativeFormat = inputNode.outputFormat(forBus: 0)
+        let format = inputNode.outputFormat(forBus: 0)
 
-        logger.info("Input format: \(nativeFormat.sampleRate)Hz, \(nativeFormat.channelCount)ch, \(nativeFormat.commonFormat.rawValue)")
+        logger.info("Warming up audio engine: \(format.sampleRate)Hz, \(format.channelCount)ch, \(format.commonFormat.rawValue)")
 
-        guard nativeFormat.sampleRate > 0, nativeFormat.channelCount > 0 else {
+        guard format.sampleRate > 0, format.channelCount > 0 else {
             throw RecorderError.noInputDevice
         }
 
-        // Create temp WAV file
-        let tempDir = FileManager.default.temporaryDirectory
-        let fileURL = tempDir.appendingPathComponent("voiceink_\(UUID().uuidString).wav")
-        tempFileURL = fileURL
+        self.audioEngine = engine
+        self.cachedFormat = format
 
-        // Record in native format — no conversion needed
-        // Deepgram accepts WAV at any sample rate
-        let audioFile = try AVAudioFile(forWriting: fileURL, settings: nativeFormat.settings)
-        let writer = AudioFileWriter(file: audioFile)
-        self.fileWriter = writer
+        // Install a PERMANENT tap — never removed between recordings.
+        // The isCapturing flag controls whether buffers are written or discarded.
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            guard let self else { return }
 
-        logger.info("AVAudioFile created. Processing format: \(audioFile.processingFormat.sampleRate)Hz, \(audioFile.processingFormat.channelCount)ch")
+            // Fast atomic check — if not capturing, discard buffer immediately
+            guard self.isCapturing.withLock({ $0 }) else { return }
 
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: nativeFormat) { [weak self] buffer, _ in
-            // Write buffer directly — format matches, no conversion
-            writer.write(from: buffer)
+            // Write buffer to file
+            self.fileWriter?.write(from: buffer)
 
             // Calculate audio level for UI
             let level = AudioRecorder.calculateLevel(buffer: buffer)
             Task { @MainActor in
-                self?.audioLevel = level
+                self.audioLevel = level
             }
         }
 
         engine.prepare()
         try engine.start()
-        audioEngine = engine
+
+        engineRunning = true
+        registerConfigChangeObserver(for: engine)
+        logger.info("Audio engine warmed up and running (discarding buffers until recording starts)")
+    }
+
+    // MARK: - Recording
+
+    func startRecording() throws {
+        // Ensure engine is running (first recording or after device change)
+        if !engineRunning {
+            try warmUp()
+        }
+
+        guard let nativeFormat = cachedFormat else {
+            throw RecorderError.noInputDevice
+        }
+
+        // Create temp WAV file
+        let tempDir = FileManager.default.temporaryDirectory
+        let fileURL = tempDir.appendingPathComponent("voicepolish_\(UUID().uuidString).wav")
+        tempFileURL = fileURL
+
+        let audioFile = try AVAudioFile(forWriting: fileURL, settings: nativeFormat.settings)
+        let writer = AudioFileWriter(file: audioFile)
+        self.fileWriter = writer
+
+        logger.info("Recording file created. Format: \(audioFile.processingFormat.sampleRate)Hz, \(audioFile.processingFormat.channelCount)ch")
+
+        // Flip the capture flag — recording starts on the very next audio callback
+        isCapturing.withLock { $0 = true }
 
         state = .recording
         startTime = Date()
@@ -88,11 +139,11 @@ final class AudioRecorder {
         recordingDuration = 0
         startTimer()
 
-        logger.info("Recording started successfully")
+        logger.info("Recording started (capture flag enabled)")
     }
 
     func pauseRecording() {
-        audioEngine?.pause()
+        isCapturing.withLock { $0 = false }
         if let start = startTime {
             accumulatedTime += Date().timeIntervalSince(start)
         }
@@ -103,7 +154,8 @@ final class AudioRecorder {
     }
 
     func resumeRecording() throws {
-        try audioEngine?.start()
+        // Engine is still running — just flip the flag back
+        isCapturing.withLock { $0 = true }
         startTime = Date()
         startTimer()
         state = .recording
@@ -111,9 +163,11 @@ final class AudioRecorder {
     }
 
     func stopRecording() -> URL? {
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine?.stop()
-        audioEngine = nil
+        // Stop capturing — buffers are discarded from this point
+        isCapturing.withLock { $0 = false }
+
+        // Engine stays running — do NOT stop or remove tap
+
         fileWriter?.close()
         fileWriter = nil
         timer?.invalidate()
@@ -124,8 +178,9 @@ final class AudioRecorder {
         }
 
         state = .idle
+        audioLevel = 0
         let url = tempFileURL
-        logger.info("Recording stopped. Duration: \(String(format: "%.1f", accumulatedTime))s")
+        logger.info("Recording stopped. Duration: \(String(format: "%.1f", accumulatedTime))s. Engine still running.")
         return url
     }
 
@@ -153,6 +208,45 @@ final class AudioRecorder {
     }
 
     // MARK: - Private
+
+    private func registerConfigChangeObserver(for engine: AVAudioEngine) {
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleEngineConfigChange()
+            }
+        }
+    }
+
+    private func handleEngineConfigChange() {
+        let wasCapturing = isCapturing.withLock { $0 }
+        logger.info("Audio engine configuration changed (device change). Was capturing: \(wasCapturing)")
+
+        // Tear down current engine
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configChangeObserver = nil
+        }
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine?.stop()
+        audioEngine = nil
+        cachedFormat = nil
+        engineRunning = false
+
+        // Restart engine immediately with new device
+        do {
+            try warmUp()
+            logger.info("Audio engine restarted after device change")
+        } catch {
+            logger.error("Failed to restart audio engine after device change: \(error)")
+        }
+    }
 
     private func startTimer() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in

@@ -70,8 +70,8 @@ struct RecordingPopupView: View {
     @Bindable var appState: AppState
     let onClose: () -> Void
 
-    @State private var popupState: PopupState = .idle
-    @State private var autoStarted = false
+    /// Recording is already in progress when the popup appears (started in toggleRecordingPopup).
+    @State private var popupState: PopupState = .recording
 
     enum PopupState: Equatable {
         case idle
@@ -93,13 +93,6 @@ struct RecordingPopupView: View {
         }
         .padding(20)
         .frame(width: 300)
-        .onAppear {
-            // Auto-start recording when the popup appears
-            if !autoStarted {
-                autoStarted = true
-                startRecording()
-            }
-        }
         .onChange(of: appState.shouldStopAndSend) { _, newValue in
             if newValue {
                 appState.shouldStopAndSend = false

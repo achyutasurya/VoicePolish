@@ -269,6 +269,14 @@ struct SettingsView: View {
                 Button("Quit VoicePolish") {
                     NSApplication.shared.terminate(nil)
                 }
+
+                HStack {
+                    Spacer()
+                    Text("v\(appVersion)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
             }
             .padding()
         }

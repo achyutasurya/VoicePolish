@@ -101,18 +101,32 @@ Customize how the LLM processes your transcriptions. Default prompt focuses on g
 ```
 Hotkey (Cmd+])
   ↓
-Record Audio (Deepgram)
+Start Recording (instant — before popup appears)
+  ↓
+Show Recording Popup (non-activating, preserves focus)
+  ↓
+Hotkey again (or Stop button)
   ↓
 Transcribe (Deepgram STT)
   ↓
 Process with LLM (OpenRouter)
   ↓
-Copy to Clipboard
-  ↓
-Paste (Cmd+V) → Target App
-  ↓
-Restore Original Clipboard
+Re-activate target app → Paste (Cmd+V) → Restore clipboard
 ```
+
+The audio engine is reused across recordings (kept stopped but alive) to eliminate cold-start delay. Recording starts before the popup renders to capture speech from the instant the hotkey is pressed.
+
+## Versioning
+
+VoicePolish uses a **`MAJOR.DEPLOY.LOCAL`** scheme (e.g. `0.1.1`):
+
+| Segment | Meaning |
+|---------|---------|
+| `MAJOR` | Breaking changes or major milestones |
+| `DEPLOY` | Incremented on each production push; resets `LOCAL` to `0` |
+| `LOCAL` | Incremented on each local build/test cycle |
+
+The current version is displayed at the bottom of the Settings panel. See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ## Logging
 
@@ -129,15 +143,15 @@ View logs for debugging API issues, focus problems, or transcription errors.
 
 ```
 VoicePolish/
-├── VoiceInk/                    # Main app source
-│   ├── VoicePolishApp.swift     # App entry point
+├── VoicePolish/                  # Main app source
+│   ├── VoicePolishApp.swift     # App entry point & AppState
 │   ├── Models/                  # Data models
-│   │   ├── AppSettings.swift    # User settings
-│   │   └── LLMModels.swift      # Available models
+│   │   ├── AppSettings.swift    # User settings (UserDefaults)
+│   │   └── LLMModels.swift      # Available LLM models
 │   ├── Services/                # Business logic
+│   │   ├── AudioRecorder.swift  # AVAudioEngine recording
 │   │   ├── DeepgramService.swift
 │   │   ├── OpenRouterService.swift
-│   │   ├── AudioRecorder.swift
 │   │   ├── TextInsertionService.swift
 │   │   └── LoggingService.swift
 │   ├── Views/                   # SwiftUI interfaces
@@ -145,20 +159,23 @@ VoicePolish/
 │   │   ├── SettingsView.swift
 │   │   └── APIKeyView.swift
 │   ├── Utilities/               # Helpers
+│   │   ├── AppVersion.swift     # Version constant
 │   │   ├── HotkeyManager.swift
 │   │   └── PermissionManager.swift
 │   └── Info.plist               # App configuration
 ├── Package.swift                # SPM manifest
 ├── build.sh                     # Release build script
+├── VERSION                      # Version source of truth
+├── CHANGELOG.md                 # Version history & notes
+├── CLAUDE.md                    # Development guidance
 ├── LICENSE                      # MIT License
 ├── README.md                    # This file
-├── CLAUDE.md                    # Development notes
 └── .gitignore                   # Git exclusions
 ```
 
 ### Dependencies
 
-- **KeyboardShortcuts** (v1.15.0) - Global hotkey registration
+- **KeyboardShortcuts** (sindresorhus, v2+) — Global hotkey registration
 
 ### Building
 
@@ -184,7 +201,7 @@ bash build.sh
 
 ### Processing Taking Too Long
 - High temperature settings increase processing time
-- Reasoning models (Olmo) are slower - try Mistral Nemo instead
+- Reasoning models are slower — try DeepSeek Chat instead
 - Check OpenRouter API status
 
 ### API Key Not Being Saved

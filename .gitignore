@@ -39,3 +39,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local changelog (not pushed to GitHub)
+CHANGELOG.md

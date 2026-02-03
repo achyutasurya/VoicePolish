@@ -35,6 +35,14 @@ final class AppState {
         }
         permissionManager.checkAndRequestPermissions()
         logger.info("VoicePolish started")
+
+        // Warm up audio engine so first recording is instant.
+        // The engine stays running (discarding buffers) until a recording starts.
+        do {
+            try audioRecorder.warmUp()
+        } catch {
+            logger.error("Audio engine warm-up failed: \(error)")
+        }
     }
 
     func toggleRecordingPopup() {
@@ -60,6 +68,16 @@ final class AppState {
             }
 
             permissionManager.checkMicrophonePermission()
+
+            // Start recording BEFORE showing popup to eliminate SwiftUI rendering delay.
+            // Audio capture begins the instant the hotkey is pressed.
+            do {
+                try audioRecorder.startRecording()
+            } catch {
+                logger.error("Failed to start recording: \(error)")
+                return
+            }
+
             controller.showPopup(appState: self)
         }
     }

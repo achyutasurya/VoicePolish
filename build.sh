@@ -20,7 +20,7 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/"
 
 # 4. Copy Info.plist
-cp "$PROJECT_DIR/VoiceInk/Info.plist" "$APP_BUNDLE/Contents/"
+cp "$PROJECT_DIR/VoicePolish/Info.plist" "$APP_BUNDLE/Contents/"
 
 # 5. Code sign with Apple Development certificate (stable identity for TCC permissions)
 codesign --force --deep --sign "Apple Development: achyutasuryatej@icloud.com (4B3CUD9DRZ)" "$APP_BUNDLE"

@@ -29,11 +29,11 @@ Hotkey (Cmd+]) → auto-start recording → hotkey again (or Stop button) → De
 
 ### Key Components
 
-**AppState** (`VoicePolishApp.swift`) — `@MainActor @Observable` class that owns all services, registers the global hotkey listener, and coordinates the recording popup. The `shouldStopAndSend` flag bridges hotkey events to the SwiftUI view via `.onChange`.
+**AppState** (`VoicePolishApp.swift`) — `@MainActor @Observable` class that owns all services, registers the global hotkey listener, and coordinates the recording popup. Recording starts in `toggleRecordingPopup()` BEFORE showing the popup to eliminate SwiftUI rendering delay. The `shouldStopAndSend` flag bridges hotkey events to the SwiftUI view via `.onChange`.
 
-**RecordingPopupView** (`Views/RecordingPopupView.swift`) — Contains both `RecordingPopupController` (NSPanel management) and the SwiftUI view. The NSPanel uses `.nonActivatingPanel` style mask so it does NOT steal focus from the target text field. The view drives a state machine: idle → recording → transcribing → processing → done/error. The `stopAndSend()` method orchestrates the entire pipeline.
+**RecordingPopupView** (`Views/RecordingPopupView.swift`) — Contains both `RecordingPopupController` (NSPanel management) and the SwiftUI view. The NSPanel uses `.nonActivatingPanel` style mask so it does NOT steal focus from the target text field. The view drives a state machine: recording → transcribing → processing → done/error. The `stopAndSend()` method orchestrates the entire pipeline. Note: the popup opens with recording already in progress (popupState starts as `.recording`).
 
-**Services** — `DeepgramService` and `OpenRouterService` are Swift `actor` types for thread safety. `AudioRecorder` and `TextInsertionService` are `@MainActor`. `LoggingService` is `@unchecked Sendable` with thread-safe file writing.
+**Services** — `DeepgramService` and `OpenRouterService` are Swift `actor` types for thread safety. `AudioRecorder` and `TextInsertionService` are `@MainActor`. `LoggingService` is `@unchecked Sendable` with thread-safe file writing. `AudioRecorder` reuses its `AVAudioEngine` instance across recordings (kept stopped but alive) to avoid cold-start delay; the engine is invalidated on audio device configuration changes.
 
 **AppSettings** (`Models/AppSettings.swift`) — Singleton wrapping UserDefaults via computed properties. Note: `@Observable` does not properly track these computed properties, so views that need reactive updates use local `@State` variables (see `LLMModelPickerView.displayedModel`).
 
@@ -52,6 +52,21 @@ Accessibility permission is tied to the app's code signature in the TCC database
 ## Single External Dependency
 
 `KeyboardShortcuts` (sindresorhus, v2+) — global hotkey registration. The hotkey name `.toggleRecording` defaults to Cmd+] and is defined in `Utilities/HotkeyManager.swift`.
+
+## Versioning
+
+Three-part scheme: **`MAJOR.DEPLOY.LOCAL`** (e.g. `0.1.1`).
+
+- `MAJOR` — breaking changes / major milestones
+- `DEPLOY` — incremented on each production push; resets `LOCAL` to `0`
+- `LOCAL` — incremented on each local build/test cycle
+
+**Where the version lives (keep all three in sync):**
+1. `VERSION` file (project root) — single source of truth
+2. `VoicePolish/Utilities/AppVersion.swift` — `appVersion` constant read by the UI
+3. `VoicePolish/Info.plist` — `CFBundleShortVersionString`
+
+**When bumping:** update all three, then add an entry to `CHANGELOG.md`.
 
 ## Logging
 
