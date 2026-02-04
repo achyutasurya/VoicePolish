@@ -88,19 +88,19 @@ final class AudioRecorder {
         warmupTask?.cancel()
 
         // Atomic state check and transition (non-async to prevent actor reentrancy)
-        let currentState = engineState.withLock { state -> EngineState in
-            guard state != .warmingUp else { return state }
+        let wasAlreadyWarming = engineState.withLock { state -> Bool in
+            guard state != .warmingUp else {
+                logger.error("Warmup already in progress, force-cancelling old task and retrying")
+                return true
+            }
             state = .warmingUp
-            return state
+            return false
         }
 
-        // If already warming up, wait for it to complete and propagate any errors
-        guard currentState != .warmingUp else {
-            logger.info("Warmup already in progress, waiting for completion")
-            if let task = warmupTask {
-                try await task.value
-            }
-            return
+        // If was already warming up, force reset and retry
+        if wasAlreadyWarming {
+            engineState.withLock { $0 = .stopped }
+            // Fall through to create a new warmup task
         }
 
         // Create a task for the actual warmup work
@@ -123,8 +123,10 @@ final class AudioRecorder {
     /// Performs the actual audio engine initialization with timeout and health validation.
     /// Separated from warmUp() to enable proper async error handling and timeouts.
     private func performWarmup() async throws {
+        logger.info("performWarmup() starting...")
         let setupStart = CFAbsoluteTimeGetCurrent()
 
+        logger.debug("Creating AVAudioEngine instance")
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
@@ -140,6 +142,7 @@ final class AudioRecorder {
 
         // Install a PERMANENT tap — never removed between recordings.
         // The isCapturing flag controls whether buffers are written or discarded.
+        logger.debug("Installing audio tap on input node")
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self else { return }
 
@@ -158,7 +161,9 @@ final class AudioRecorder {
                 self.audioLevel = level
             }
         }
+        logger.debug("Audio tap installed successfully")
 
+        logger.debug("Preparing engine...")
         engine.prepare()
         let prepareElapsed = (CFAbsoluteTimeGetCurrent() - setupStart) * 1000
         logger.debug("Engine prepared in \(String(format: "%.1f", prepareElapsed))ms")
@@ -175,7 +180,9 @@ final class AudioRecorder {
         // Wait for first buffer to verify health
         logger.debug("Waiting 100ms for first audio buffer...")
         try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        logger.debug("Sleep complete, verifying engine health...")
         try verifyEngineHealth()
+        logger.debug("Engine health verified successfully")
 
         registerConfigChangeObserver(for: engine)
         registerInterruptionObserver()
