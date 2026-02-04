@@ -29,6 +29,8 @@ final class AppState {
     /// Set to `true` by the hotkey handler to tell the popup view to trigger stopAndSend.
     var shouldStopAndSend = false
 
+    private var configChangeObserver: NSObjectProtocol?
+
     init() {
         KeyboardShortcuts.onKeyDown(for: .toggleRecording) { [weak self] in
             self?.toggleRecordingPopup()
@@ -38,6 +40,9 @@ final class AppState {
         }
         permissionManager.checkAndRequestPermissions()
         logger.info("VoicePolish started")
+
+        // Monitor for audio engine configuration changes and recover proactively
+        registerConfigChangeObserver()
 
         // Warm up audio engine asynchronously so first recording is instant.
         // The engine stays running (discarding buffers) until a recording starts.
@@ -49,6 +54,34 @@ final class AppState {
                 self?.logger.error("Audio engine warm-up failed: \(error)")
             }
         }
+    }
+
+    private func registerConfigChangeObserver() {
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            let engineState = self.audioRecorder.engineState.withLock { $0 }
+            // Only recover if engine is broken or running (proactive maintenance)
+            if case .broken = engineState {
+                self.logger.info("Audio engine configuration changed and engine is broken, recovering...")
+                Task { @MainActor in
+                    do {
+                        try await self.audioRecorder.recoverEngine()
+                        self.logger.info("Proactive engine recovery after config change successful")
+                    } catch {
+                        self.logger.error("Proactive engine recovery failed: \(error)")
+                    }
+                }
+            }
+        }
+    }
+
+    nonisolated deinit {
+        // Notification observers are automatically cleaned up by NotificationCenter
+        // when the observer object is deallocated, so no explicit cleanup needed
     }
 
     func cancelRecordingFromHotkey() {

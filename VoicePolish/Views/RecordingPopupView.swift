@@ -9,14 +9,18 @@ final class RecordingPopupController {
 
     private var panel: NSPanel?
     /// The app that was frontmost when the popup opened — we re-activate it before pasting.
+    /// Only set once per popup lifecycle to prevent race conditions.
     var previousApp: NSRunningApplication?
 
     var isShowing: Bool { panel != nil }
 
     func showPopup(appState: AppState) {
+        // Guard against race: if popup is already showing, do not overwrite previousApp
         if panel != nil { return }
 
-        // Remember the currently focused app so we can re-activate it before pasting
+        // Remember the currently focused app so we can re-activate it before pasting.
+        // This is set ONLY once when popup first opens to prevent race conditions
+        // from rapid hotkey presses overwriting the target app.
         previousApp = NSWorkspace.shared.frontmostApplication
 
         let panel = NSPanel(
@@ -332,10 +336,12 @@ struct RecordingPopupView: View {
         popupState = .transcribing
         _ = appState.audioRecorder.stopRecording()
 
-        // 2. Get audio data
+        // 2. Get audio data (and clean up temp file)
         guard let wavData = appState.audioRecorder.getAudioData() else {
             logger.error("stopAndSend: no audio data")
             popupState = .error("No audio data recorded")
+            // Ensure temp file cleanup on error
+            appState.audioRecorder.cancelRecording()
             return
         }
         logger.info("stopAndSend: got \(wavData.count) bytes of audio")

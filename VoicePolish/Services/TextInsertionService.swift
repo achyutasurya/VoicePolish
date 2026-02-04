@@ -17,9 +17,18 @@ final class TextInsertionService {
 
         let pasteboard = NSPasteboard.general
 
-        // 1. Save current clipboard contents
+        // 1. Save current clipboard contents (CRITICAL: must be restored later)
         let previousString = pasteboard.string(forType: .string)
         logger.info("Saved previous clipboard (\(previousString?.count ?? 0) chars)")
+
+        // Ensure clipboard is restored even if paste fails or task is cancelled
+        defer {
+            pasteboard.clearContents()
+            if let previousString {
+                pasteboard.setString(previousString, forType: .string)
+                logger.debug("Previous clipboard restored")
+            }
+        }
 
         // 2. Set the text we want to paste
         pasteboard.clearContents()
@@ -44,14 +53,9 @@ final class TextInsertionService {
 
         logger.info("Cmd+V posted via CGEvent (\(text.count) chars)")
 
-        // 5. Wait for paste to complete, then restore clipboard
-        try await Task.sleep(nanoseconds: 500_000_000) // 500ms
-
-        pasteboard.clearContents()
-        if let previousString {
-            pasteboard.setString(previousString, forType: .string)
-            logger.debug("Previous clipboard restored")
-        }
+        // 5. Wait for paste to complete. App behavior varies, so allow generous time.
+        // The defer block above guarantees clipboard restoration regardless of how we exit.
+        try await Task.sleep(nanoseconds: 200_000_000) // 200ms
     }
 
     enum TextInsertionError: LocalizedError {

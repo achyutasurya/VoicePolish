@@ -6,6 +6,10 @@ import SwiftUI
 final class AppSettings {
     static let shared = AppSettings()
 
+    /// Note: @Observable does not properly track changes to computed properties backed by UserDefaults.
+    /// Views that need reactive updates should use local @State variables that explicitly read from
+    /// these properties, rather than relying on automatic observation. See LLMModelPickerView for example.
+
     /// Old default prompt — used to detect and auto-migrate to the new one.
     private static let oldDefaultPrompt = "Rewrite the text we received from audio, by considering the grammar of the language"
 

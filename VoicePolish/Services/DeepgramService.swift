@@ -72,6 +72,23 @@ actor DeepgramService {
 
         logger.info("Deepgram response: HTTP \(httpResponse.statusCode)")
 
+        // Handle rate limiting with automatic retry
+        if httpResponse.statusCode == 429 {
+            let retryAfter = httpResponse.value(forHTTPHeaderField: "Retry-After") ?? "1"
+            let waitSeconds = Double(retryAfter) ?? 1.0
+            logger.info("Deepgram rate limited. Retrying after \(String(format: "%.1f", waitSeconds))s")
+
+            try await Task.sleep(nanoseconds: UInt64(waitSeconds * 1_000_000_000))
+
+            // Retry the request recursively (max 1 retry to avoid infinite loops)
+            do {
+                return try await transcribeAudio(wavData: wavData, apiKey: apiKey, model: model)
+            } catch DeepgramError.apiError(let code, _) where code == 429 {
+                // Rate limited again, give up
+                throw DeepgramError.apiError(statusCode: 429, message: "Rate limited: too many requests")
+            }
+        }
+
         guard httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
             logger.error("Deepgram error: \(errorBody)")

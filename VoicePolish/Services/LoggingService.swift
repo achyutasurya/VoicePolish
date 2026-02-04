@@ -50,9 +50,9 @@ final class LoggingService: @unchecked Sendable {
 
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 if let handle = try? FileHandle(forWritingTo: fileURL) {
+                    defer { handle.closeFile() }
                     handle.seekToEndOfFile()
                     handle.write(data)
-                    handle.closeFile()
                 }
             } else {
                 try? data.write(to: fileURL)

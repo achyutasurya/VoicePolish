@@ -111,8 +111,14 @@ final class AudioRecorder {
                 let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
                 self?.logger.info("warmUp() completed in \(String(format: "%.1f", elapsed))ms - State: running")
             } catch {
-                self?.engineState.withLock { $0 = .broken }
-                self?.logger.error("warmUp() failed - State: broken - Error: \(error.localizedDescription)")
+                // Always set final state, even on cancellation or other errors
+                if Task.isCancelled {
+                    self?.engineState.withLock { $0 = .stopped }
+                    self?.logger.info("warmUp() cancelled - State: stopped")
+                } else {
+                    self?.engineState.withLock { $0 = .broken }
+                    self?.logger.error("warmUp() failed - State: broken - Error: \(error.localizedDescription)")
+                }
                 throw error
             }
         }
@@ -201,7 +207,7 @@ final class AudioRecorder {
     }
 
     /// Executes an async operation with a timeout. If the operation exceeds the timeout,
-    /// throws engineStartTimeout error.
+    /// throws engineStartTimeout error. Properly cancels all child tasks on completion.
     private func withTimeout<T>(
         seconds: TimeInterval,
         operation: @escaping () throws -> T
@@ -214,14 +220,26 @@ final class AudioRecorder {
                 try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 throw RecorderError.engineStartTimeout
             }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+
+            // Get first result (either operation completes or timeout fires)
+            do {
+                guard let result = try await group.next() else {
+                    throw RecorderError.engineStartTimeout
+                }
+                // Cancel remaining tasks (important: must happen before exiting scope)
+                group.cancelAll()
+                return result
+            } catch {
+                // Cancel remaining tasks on error
+                group.cancelAll()
+                throw error
+            }
         }
     }
 
     /// Verifies that the audio engine is healthy by checking that buffers are flowing.
     /// Throws if no buffers have been received since warmup started.
+    /// The 5 second threshold accounts for system under load and variable buffer delivery timing.
     private func verifyEngineHealth() throws {
         let lastBuffer = lastBufferTimestamp.withLock { $0 }
 
@@ -230,7 +248,8 @@ final class AudioRecorder {
         }
 
         let timeSinceLastBuffer = Date().timeIntervalSince(lastBuffer)
-        guard timeSinceLastBuffer < 2.0 else {
+        // Allow up to 5 seconds for first buffer on heavily loaded systems
+        guard timeSinceLastBuffer < 5.0 else {
             throw RecorderError.engineBroken("Audio buffers stopped flowing (no buffer in \(String(format: "%.1f", timeSinceLastBuffer))s)")
         }
 
@@ -258,6 +277,12 @@ final class AudioRecorder {
 
         guard let nativeFormat = cachedFormat else {
             throw RecorderError.noInputDevice
+        }
+
+        // Validate format is compatible with WAV
+        guard nativeFormat.sampleRate <= 192000, nativeFormat.channelCount <= 2 else {
+            logger.error("Audio format not WAV-compatible: \(nativeFormat.sampleRate)Hz, \(nativeFormat.channelCount)ch")
+            throw RecorderError.formatCreationFailed
         }
 
         // Create temp WAV file
@@ -432,9 +457,17 @@ final class AudioRecorder {
                     return
                 }
 
-                await self?.performEngineRestart()
+                // Verify self is still alive before proceeding
+                guard let self else {
+                    return
+                }
+
+                await self.performEngineRestart()
             } catch {
-                self?.logger.error("Device change debounce task failed: \(error)")
+                // Only log if self is still alive (catch cancellation silently)
+                if !Task.isCancelled {
+                    self?.logger.error("Device change debounce task failed: \(error)")
+                }
             }
         }
     }
@@ -443,8 +476,13 @@ final class AudioRecorder {
     private func performEngineRestart() async {
         logger.info("Debounce period elapsed - Beginning engine restart")
 
-        // Cancel any ongoing warmup
+        // Cancel any ongoing warmup and wait briefly for it to wind down
         warmupTask?.cancel()
+        do {
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms for task to respond to cancellation
+        } catch {
+            // Ignore sleep cancellation
+        }
 
         // Tear down current engine (synchronous)
         if let observer = configChangeObserver {
@@ -473,11 +511,13 @@ final class AudioRecorder {
     private func startTimer() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.state == .recording, let start = self.startTime else { return }
+                guard let self else { return }
+                guard self.state == .recording, let start = self.startTime else { return }
                 self.recordingDuration = self.accumulatedTime + Date().timeIntervalSince(start)
             }
         }
     }
+
 
     nonisolated static func calculateLevel(buffer: AVAudioPCMBuffer) -> Float {
         guard let channelData = buffer.floatChannelData?[0] else { return 0 }
