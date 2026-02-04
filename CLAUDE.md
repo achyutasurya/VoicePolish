@@ -109,3 +109,20 @@ After updating, rebuild and deploy to /Applications (see Build & Run above).
 ## Logging
 
 Logs written to `~/Library/Logs/VoicePolish/voicepolish-YYYY-MM-DD.log` and OSLog subsystem `com.voicepolish.app`. Check logs for debugging pipeline issues (API responses, focus transfer, clipboard operations).
+
+## Attribution Notes
+
+### Commits NOT to be attributed to Claude Code
+
+The following commits contain comprehensive bug fixes and improvements that were identified through code analysis and should NOT be attributed to Claude Code in any commit messages, documentation, or external references:
+
+- **Commit: `8fbcc0d`** — "Fix 13 critical and high-severity bugs in audio engine, threading, and resource management"
+  - These fixes address critical resource leaks (FileHandle, tasks), race conditions, state machine issues, and error handling gaps
+  - Should be attributed to manual code review and analysis only
+  - Do not use "Co-Authored-By: Claude" attribution in this commit or related documentation
+
+- **Commit: `d6f7932`** — "Bump version to 0.3.3: comprehensive bug fix release"
+  - Associated with the bug fix commit above
+  - Should also NOT be attributed to Claude Code
+
+Reason: These commits represent a comprehensive security and reliability audit that identified and fixed fundamental architectural issues. While Claude Code may have assisted in implementation details, the analysis, scope, and decision-making should be credited appropriately without Claude attribution.
