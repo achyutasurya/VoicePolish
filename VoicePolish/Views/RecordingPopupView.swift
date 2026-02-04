@@ -81,6 +81,7 @@ struct RecordingPopupView: View {
         case processing
         case done
         case error(String)
+        case engineBroken(String)
     }
 
     var body: some View {
@@ -185,6 +186,25 @@ struct RecordingPopupView: View {
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
             }
+
+        case .engineBroken(let message):
+            VStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.large)
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.title2)
+                    .foregroundColor(.orange)
+                Text("Audio Engine Recovery")
+                    .font(.headline)
+                    .foregroundColor(.orange)
+                Text(message)
+                    .font(.caption)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                Text("Attempting automatic recovery...")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
         }
     }
 
@@ -241,6 +261,11 @@ struct RecordingPopupView: View {
                 Button("Close") {
                     onClose()
                 }
+
+            case .engineBroken:
+                Button("Cancel") {
+                    onClose()
+                }
             }
         }
     }
@@ -256,6 +281,22 @@ struct RecordingPopupView: View {
     // MARK: - Actions
 
     private func startRecording() {
+        // Check if engine is broken
+        let state = appState.audioRecorder.engineState.withLock { $0 }
+        if case .broken = state {
+            popupState = .engineBroken("Audio engine is in a broken state")
+            Task {
+                do {
+                    try await appState.audioRecorder.recoverEngine()
+                    try appState.audioRecorder.startRecording()
+                    popupState = .recording
+                } catch {
+                    popupState = .error("Recovery failed: \(error.localizedDescription)")
+                }
+            }
+            return
+        }
+
         do {
             try appState.audioRecorder.startRecording()
             popupState = .recording

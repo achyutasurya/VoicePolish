@@ -39,12 +39,15 @@ final class AppState {
         permissionManager.checkAndRequestPermissions()
         logger.info("VoicePolish started")
 
-        // Warm up audio engine so first recording is instant.
+        // Warm up audio engine asynchronously so first recording is instant.
         // The engine stays running (discarding buffers) until a recording starts.
-        do {
-            try audioRecorder.warmUp()
-        } catch {
-            logger.error("Audio engine warm-up failed: \(error)")
+        Task { @MainActor [weak self] in
+            do {
+                try await self?.audioRecorder.warmUp()
+                self?.logger.info("Initial audio engine warmup successful")
+            } catch {
+                self?.logger.error("Audio engine warm-up failed: \(error)")
+            }
         }
     }
 
@@ -87,6 +90,21 @@ final class AppState {
             // Audio capture begins the instant the hotkey is pressed.
             do {
                 try audioRecorder.startRecording()
+            } catch AudioRecorder.RecorderError.engineNotReady {
+                // Engine not ready — show popup and perform warmup async
+                logger.info("Engine not ready, warming up before recording")
+                controller.showPopup(appState: self)
+                Task { @MainActor in
+                    do {
+                        try await audioRecorder.warmUp()
+                        try audioRecorder.startRecording()
+                        logger.info("Warmup complete, recording started")
+                    } catch {
+                        logger.error("Failed to start recording after warmup: \(error)")
+                        controller.closePopup(appState: self)
+                    }
+                }
+                return
             } catch {
                 logger.error("Failed to start recording: \(error)")
                 return
