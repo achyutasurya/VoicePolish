@@ -90,8 +90,23 @@ final class AppState {
             // Audio capture begins the instant the hotkey is pressed.
             do {
                 try audioRecorder.startRecording()
+            } catch AudioRecorder.RecorderError.engineBroken(let reason) {
+                // Engine is broken — show popup and attempt recovery
+                logger.error("Engine is broken (\(reason)), attempting recovery")
+                controller.showPopup(appState: self)
+                Task { @MainActor in
+                    do {
+                        try await audioRecorder.recoverEngine()
+                        try audioRecorder.startRecording()
+                        logger.info("Recovery and recording started successfully")
+                    } catch {
+                        logger.error("Failed to recover engine or start recording: \(error)")
+                        controller.closePopup(appState: self)
+                    }
+                }
+                return
             } catch AudioRecorder.RecorderError.engineNotReady {
-                // Engine not ready — show popup and perform warmup async
+                // Engine not ready (warming up) — show popup and wait for warmup
                 logger.info("Engine not ready, warming up before recording")
                 controller.showPopup(appState: self)
                 Task { @MainActor in

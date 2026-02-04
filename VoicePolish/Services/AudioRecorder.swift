@@ -94,10 +94,12 @@ final class AudioRecorder {
             return state
         }
 
-        // If already warming up, wait for it to complete
+        // If already warming up, wait for it to complete and propagate any errors
         guard currentState != .warmingUp else {
             logger.info("Warmup already in progress, waiting for completion")
-            try await warmupTask?.value
+            if let task = warmupTask {
+                try await task.value
+            }
             return
         }
 
@@ -115,7 +117,7 @@ final class AudioRecorder {
             }
         }
 
-        try? await warmupTask?.value
+        try await warmupTask?.value
     }
 
     /// Performs the actual audio engine initialization with timeout and health validation.
