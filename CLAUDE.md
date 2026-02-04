@@ -89,6 +89,23 @@ CHANGELOG.md:       Add ## [0.2.1] section
 
 After updating, rebuild and deploy to /Applications (see Build & Run above).
 
+### Versioning Workflow During Development
+
+**Always update the version number after making changes that will be deployed**, even if it's a bugfix to a just-released version:
+
+1. **After completing a feature or fix** that you're about to deploy:
+   - Bump the LOCAL version (last number): e.g., `0.3.0 → 0.3.1`
+   - Update all four files (VERSION, AppVersion.swift, Info.plist, CHANGELOG.md)
+   - Rebuild with `bash build.sh`
+   - Deploy to `/Applications`
+   - Commit with the new version in the message
+
+2. **When pushing to production from DEPLOY version**:
+   - Bump the DEPLOY version and reset LOCAL to 0: e.g., `0.3.5 → 0.4.0`
+   - This signals a major milestone/release
+
+3. **Never skip version bumps** — each build deployed to `/Applications` should have a unique version to track what's running
+
 ## Logging
 
 Logs written to `~/Library/Logs/VoicePolish/voicepolish-YYYY-MM-DD.log` and OSLog subsystem `com.voicepolish.app`. Check logs for debugging pipeline issues (API responses, focus transfer, clipboard operations).
