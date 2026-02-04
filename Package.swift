@@ -17,5 +17,10 @@ let package = Package(
                 .copy("AppIcon.icns"),
             ]
         ),
+        .testTarget(
+            name: "VoicePolishTests",
+            dependencies: ["VoicePolish"],
+            path: "VoicePolishTests"
+        ),
     ]
 )

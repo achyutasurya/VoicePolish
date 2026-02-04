@@ -132,8 +132,10 @@ final class AudioRecorder {
         let format = inputNode.outputFormat(forBus: 0)
 
         logger.info("Creating AVAudioEngine - Sample rate: \(format.sampleRate)Hz, Channels: \(format.channelCount), Format: \(format.commonFormat.rawValue)")
+        logger.info("Format details: isStandard=\(format.isStandard), commonFormat=\(format.commonFormat), sampleRate=\(format.sampleRate), channelCount=\(format.channelCount)")
 
         guard format.sampleRate > 0, format.channelCount > 0 else {
+            logger.error("Invalid format: sampleRate=\(format.sampleRate), channelCount=\(format.channelCount)")
             throw RecorderError.noInputDevice
         }
 
@@ -143,17 +145,24 @@ final class AudioRecorder {
         // Install a PERMANENT tap — never removed between recordings.
         // The isCapturing flag controls whether buffers are written or discarded.
         logger.debug("Installing audio tap on input node")
+        var bufferCount = 0
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self else { return }
+
+            // Log first few buffers to confirm tap is being called
+            bufferCount += 1
+            if bufferCount <= 3 {
+                self.logger.info("Tap callback received buffer \(bufferCount): frameLength=\(buffer.frameLength), format=\(buffer.format)")
+            }
+
+            // Update buffer timestamp for health checks (always, not just during recording)
+            self.lastBufferTimestamp.withLock { $0 = Date() }
 
             // Fast atomic check — if not capturing, discard buffer immediately
             guard self.isCapturing.withLock({ $0 }) else { return }
 
             // Write buffer to file
             self.fileWriter?.write(from: buffer)
-
-            // Update buffer timestamp for health checks
-            self.lastBufferTimestamp.withLock { $0 = Date() }
 
             // Calculate audio level for UI
             let level = AudioRecorder.calculateLevel(buffer: buffer)
@@ -178,8 +187,10 @@ final class AudioRecorder {
         logger.debug("AVAudioEngine.start() completed in \(String(format: "%.1f", startElapsed))ms")
 
         // Wait for first buffer to verify health
-        logger.debug("Waiting 100ms for first audio buffer...")
-        try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        // 250ms accounts for macOS audio driver initialization variance.
+        // Buffers typically arrive 100-150ms after engine.start(), with safety margin.
+        logger.debug("Waiting 250ms for first audio buffer (macOS hardware initialization)...")
+        try await Task.sleep(nanoseconds: 250_000_000) // 250ms
         logger.debug("Sleep complete, verifying engine health...")
         try verifyEngineHealth()
         logger.debug("Engine health verified successfully")
