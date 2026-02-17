@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreAudio
 import Foundation
 import os
 
@@ -24,6 +25,14 @@ private final class AudioFileWriter: @unchecked Sendable {
     }
 }
 
+/// Wrapper to safely transfer non-Sendable AVAudioEngine setup across actor boundaries.
+/// Used to move engine creation off the MainActor to prevent blocking the UI thread.
+private struct EngineSetup: @unchecked Sendable {
+    let engine: AVAudioEngine
+    let inputNode: AVAudioNode
+    let format: AVAudioFormat
+}
+
 @MainActor
 @Observable
 final class AudioRecorder {
@@ -34,6 +43,7 @@ final class AudioRecorder {
     var state: State = .idle
     var recordingDuration: TimeInterval = 0
     var audioLevel: Float = 0
+    var currentInputDeviceName: String = "Unknown"
 
     // MARK: - Engine State Machine
 
@@ -103,27 +113,47 @@ final class AudioRecorder {
             // Fall through to create a new warmup task
         }
 
-        // Create a task for the actual warmup work
+        // Create a task for the actual warmup work (state management is below)
         warmupTask = Task { @MainActor [weak self] in
-            do {
-                try await self?.performWarmup()
-                self?.engineState.withLock { $0 = .running }
-                let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
-                self?.logger.info("warmUp() completed in \(String(format: "%.1f", elapsed))ms - State: running")
-            } catch {
-                // Always set final state, even on cancellation or other errors
-                if Task.isCancelled {
-                    self?.engineState.withLock { $0 = .stopped }
-                    self?.logger.info("warmUp() cancelled - State: stopped")
-                } else {
-                    self?.engineState.withLock { $0 = .broken }
-                    self?.logger.error("warmUp() failed - State: broken - Error: \(error.localizedDescription)")
-                }
-                throw error
-            }
+            try await self?.performWarmup()
         }
 
-        try await warmupTask?.value
+        // Await warmup with 10-second overall timeout.
+        // This protects against CoreAudio hanging on device graph reconfiguration
+        // (observed: AVAudioEngine()/inputNode can block for 9+ minutes).
+        let taskToAwait = warmupTask
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try await taskToAwait?.value
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 10_000_000_000) // 10 seconds
+                    throw RecorderError.engineStartTimeout
+                }
+                guard let _ = try await group.next() else {
+                    throw RecorderError.engineStartTimeout
+                }
+                group.cancelAll()
+            }
+
+            // Warmup succeeded
+            engineState.withLock { $0 = .running }
+            let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+            logger.info("warmUp() completed in \(String(format: "%.1f", elapsed))ms - State: running")
+        } catch {
+            // Cancel warmup task if still running (e.g., CoreAudio hung past timeout)
+            warmupTask?.cancel()
+
+            if Task.isCancelled {
+                engineState.withLock { $0 = .stopped }
+                logger.info("warmUp() cancelled - State: stopped")
+            } else {
+                engineState.withLock { $0 = .broken }
+                logger.error("warmUp() failed - State: broken - Error: \(error.localizedDescription)")
+            }
+            throw error
+        }
     }
 
     /// Performs the actual audio engine initialization with timeout and health validation.
@@ -132,13 +162,47 @@ final class AudioRecorder {
         logger.info("performWarmup() starting...")
         let setupStart = CFAbsoluteTimeGetCurrent()
 
-        logger.debug("Creating AVAudioEngine instance")
-        let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
+        // Log current default input device for diagnostics
+        if let deviceInfo = getDefaultInputDeviceName() {
+            logger.info("Audio input device: \"\(deviceInfo.name)\" (UID: \(deviceInfo.uid))")
+            currentInputDeviceName = deviceInfo.name
+        } else {
+            logger.error("Could not query default input device")
+            currentInputDeviceName = "Unknown"
+        }
 
-        logger.info("Creating AVAudioEngine - Sample rate: \(format.sampleRate)Hz, Channels: \(format.channelCount), Format: \(format.commonFormat.rawValue)")
+        // Run engine creation on a detached task to prevent blocking the MainActor.
+        // AVAudioEngine(), inputNode, and outputFormat() are synchronous CoreAudio calls
+        // that can hang for minutes during audio device graph reconfiguration.
+        // Running them off-MainActor allows the 10-second warmup timeout to actually fire.
+        logger.debug("Creating AVAudioEngine instance (off MainActor to prevent UI freeze)")
+        let engineCreateStart = CFAbsoluteTimeGetCurrent()
+        let setup = await Task.detached {
+            let engine = AVAudioEngine()
+            let inputNode = engine.inputNode
+            let format = inputNode.outputFormat(forBus: 0)
+            return EngineSetup(engine: engine, inputNode: inputNode, format: format)
+        }.value
+        let engineCreateElapsed = (CFAbsoluteTimeGetCurrent() - engineCreateStart) * 1000
+        logger.debug("AVAudioEngine created in \(String(format: "%.1f", engineCreateElapsed))ms")
+
+        // Bail out early if we were cancelled while waiting for engine creation
+        // (e.g., timeout fired while CoreAudio was slow)
+        try Task.checkCancellation()
+
+        let engine = setup.engine
+        let inputNode = setup.inputNode
+        let format = setup.format
+
+        logger.info("Engine format - Sample rate: \(format.sampleRate)Hz, Channels: \(format.channelCount), Format: \(format.commonFormat.rawValue)")
         logger.info("Format details: isStandard=\(format.isStandard), commonFormat=\(format.commonFormat), sampleRate=\(format.sampleRate), channelCount=\(format.channelCount)")
+
+        // Warn if format doesn't look like a typical microphone
+        if format.sampleRate == 44100 && format.channelCount == 2 {
+            logger.error("WARNING: Format (44100Hz, 2ch) may indicate wrong input device — expected mono microphone input")
+        } else if format.channelCount > 1 {
+            logger.info("NOTE: Input format has \(format.channelCount) channels — stereo input detected")
+        }
 
         guard format.sampleRate > 0, format.channelCount > 0 else {
             logger.error("Invalid format: sampleRate=\(format.sampleRate), channelCount=\(format.channelCount)")
@@ -147,6 +211,9 @@ final class AudioRecorder {
 
         self.audioEngine = engine
         self.cachedFormat = format
+
+        // Check cancellation before installing tap (prevents orphaned tap if timeout fired)
+        try Task.checkCancellation()
 
         // Install a PERMANENT tap — never removed between recordings.
         // The isCapturing flag controls whether buffers are written or discarded.
@@ -178,6 +245,9 @@ final class AudioRecorder {
         }
         logger.debug("Audio tap installed successfully")
 
+        // Check cancellation before starting engine
+        try Task.checkCancellation()
+
         logger.debug("Preparing engine...")
         engine.prepare()
         let prepareElapsed = (CFAbsoluteTimeGetCurrent() - setupStart) * 1000
@@ -192,12 +262,30 @@ final class AudioRecorder {
         let startElapsed = (CFAbsoluteTimeGetCurrent() - startStart) * 1000
         logger.debug("AVAudioEngine.start() completed in \(String(format: "%.1f", startElapsed))ms")
 
-        // Wait for first buffer to verify health
-        // 250ms accounts for macOS audio driver initialization variance.
-        // Buffers typically arrive 100-150ms after engine.start(), with safety margin.
-        logger.debug("Waiting 250ms for first audio buffer (macOS hardware initialization)...")
-        try await Task.sleep(nanoseconds: 250_000_000) // 250ms
-        logger.debug("Sleep complete, verifying engine health...")
+        // Reset buffer timestamp to ensure we only detect NEW engine's buffers,
+        // not stale timestamps from a previous engine instance.
+        lastBufferTimestamp.withLock { $0 = nil }
+
+        // Poll for first buffer — check every 50ms, up to 2 seconds total.
+        // Replaces fixed 250ms sleep that was too aggressive (buffers sometimes arrive at ~264ms).
+        // On healthy systems this completes in ~100-150ms. On slow systems, waits up to 2s.
+        logger.debug("Polling for first audio buffer (up to 2s, checking every 50ms)...")
+        let maxWait: TimeInterval = 2.0
+        let pollInterval: UInt64 = 50_000_000 // 50ms
+        let pollStart = CFAbsoluteTimeGetCurrent()
+
+        while CFAbsoluteTimeGetCurrent() - pollStart < maxWait {
+            try Task.checkCancellation()
+            let hasBuffer = lastBufferTimestamp.withLock { $0 } != nil
+            if hasBuffer {
+                let waitElapsed = (CFAbsoluteTimeGetCurrent() - pollStart) * 1000
+                logger.debug("First buffer received after \(String(format: "%.1f", waitElapsed))ms of polling")
+                break
+            }
+            try await Task.sleep(nanoseconds: pollInterval)
+        }
+
+        logger.debug("Buffer polling complete, verifying engine health...")
         try verifyEngineHealth()
         logger.debug("Engine health verified successfully")
 
@@ -476,6 +564,13 @@ final class AudioRecorder {
     private func performEngineRestart() async {
         logger.info("Debounce period elapsed - Beginning engine restart")
 
+        // If warmup is already in progress, skip — let the current warmup complete (Change 4)
+        let currentState = engineState.withLock { $0 }
+        if currentState == .warmingUp {
+            logger.info("Skipping engine restart — warmup already in progress")
+            return
+        }
+
         // Cancel any ongoing warmup and wait briefly for it to wind down
         warmupTask?.cancel()
         do {
@@ -529,6 +624,48 @@ final class AudioRecorder {
         }
         let avg = sum / Float(frames)
         return min(avg * 5, 1.0)
+    }
+
+    /// Returns (deviceName, deviceUID) for the current default input device via CoreAudio.
+    /// Used for diagnostics — makes it immediately visible in logs when the wrong device is selected.
+    private nonisolated func getDefaultInputDeviceName() -> (name: String, uid: String)? {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address, 0, nil, &size, &deviceID
+        ) == noErr, deviceID != 0 else {
+            return nil
+        }
+
+        func getStringProperty(_ selector: AudioObjectPropertySelector, from objectID: AudioObjectID) -> String? {
+            var propAddress = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            // Use optional CFString to avoid creating a throwaway object.
+            // AudioObjectGetPropertyData writes a +1 retained CFStringRef into the buffer;
+            // Swift ARC manages the returned reference automatically (toll-free bridged to NSString).
+            var cfName: CFString?
+            var propSize = UInt32(MemoryLayout<CFString?>.size)
+            let status = withUnsafeMutablePointer(to: &cfName) { ptr -> OSStatus in
+                AudioObjectGetPropertyData(objectID, &propAddress, 0, nil, &propSize, UnsafeMutableRawPointer(ptr))
+            }
+            guard status == noErr, let name = cfName else { return nil }
+            return name as String
+        }
+
+        let name = getStringProperty(kAudioObjectPropertyName, from: deviceID) ?? "Unknown"
+        let uid = getStringProperty(kAudioDevicePropertyDeviceUID, from: deviceID) ?? "Unknown"
+
+        return (name: name, uid: uid)
     }
 
     enum RecorderError: LocalizedError {

@@ -246,6 +246,12 @@ struct SettingsView: View {
                     }
 
                     HStack {
+                        Image(systemName: "mic.fill")
+                            .foregroundColor(.blue)
+                        Text("Input: \(appState.audioRecorder.currentInputDeviceName)")
+                    }
+
+                    HStack {
                         Image(systemName: appState.permissionManager.accessibilityGranted ? "checkmark.circle.fill" : "xmark.circle.fill")
                             .foregroundColor(appState.permissionManager.accessibilityGranted ? .green : .red)
                         Text("Accessibility")

@@ -39,7 +39,18 @@ Hotkey (Cmd+]) → auto-start recording → hotkey again (or Stop button) → De
 
 **RecordingPopupView** (`Views/RecordingPopupView.swift`) — Contains both `RecordingPopupController` (NSPanel management) and the SwiftUI view. The NSPanel uses `.nonActivatingPanel` style mask so it does NOT steal focus from the target text field. The view drives a state machine: recording → transcribing → processing → done/error. The `stopAndSend()` method orchestrates the entire pipeline. Note: the popup opens with recording already in progress (popupState starts as `.recording`).
 
-**Services** — `DeepgramService` and `OpenRouterService` are Swift `actor` types for thread safety. `AudioRecorder` and `TextInsertionService` are `@MainActor`. `LoggingService` is `@unchecked Sendable` with thread-safe file writing. `AudioRecorder` reuses its `AVAudioEngine` instance across recordings (kept stopped but alive) to avoid cold-start delay; the engine is invalidated on audio device configuration changes.
+**Services** — `DeepgramService` and `OpenRouterService` are Swift `actor` types for thread safety. `AudioRecorder` and `TextInsertionService` are `@MainActor`. `LoggingService` is `@unchecked Sendable` with thread-safe file writing. `AudioRecorder` reuses its `AVAudioEngine` instance across recordings (kept running with a permanent tap) to avoid cold-start delay; the engine is invalidated on audio device configuration changes.
+
+### Audio Engine Lifecycle
+
+The `AudioRecorder` engine lifecycle uses a state machine (`stopped → warmingUp → running → broken`) with several protection layers:
+
+- **Off-MainActor engine creation**: `AVAudioEngine()`, `inputNode`, and `outputFormat()` are synchronous CoreAudio calls that can block for minutes during device graph reconfiguration. These are run in a `Task.detached` via `EngineSetup` (`@unchecked Sendable` wrapper) so the MainActor stays responsive and timeouts can fire.
+- **10-second overall warmup timeout**: A `withThrowingTaskGroup` races the warmup task against a sleep timer. If CoreAudio hangs, the timeout fires, cancels the warmup, and sets state to `broken`.
+- **Buffer polling**: After `engine.start()`, the code polls every 50ms (up to 2 seconds) for the first audio buffer instead of using a fixed 250ms sleep. This handles variable hardware latency.
+- **Device change coalescing**: 500ms debounce + guard against `warmingUp` state prevents cascading restarts when multiple `AVAudioEngineConfigurationChange` notifications fire in quick succession.
+- **Cancellation checkpoints**: `Task.checkCancellation()` at 3 points in `performWarmup()` (after engine creation, before tap install, before engine start) prevents orphaned state modifications.
+- **Device identification**: `getDefaultInputDeviceName()` queries CoreAudio for the default input device name and UID, logged during warmup and displayed in Settings.
 
 **AppSettings** (`Models/AppSettings.swift`) — Singleton wrapping UserDefaults via computed properties. Note: `@Observable` does not properly track these computed properties, so views that need reactive updates use local `@State` variables (see `LLMModelPickerView.displayedModel`).
 
