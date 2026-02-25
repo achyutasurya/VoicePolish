@@ -122,6 +122,49 @@ struct LLMModelPickerView: View {
     }
 }
 
+struct CitrixTypingPresetPickerView: View {
+    @Bindable var appState: AppState
+
+    @State private var selectedPreset: AppSettings.CitrixTypingSpeedPreset = .wpm50
+    @State private var effectiveTimings = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Citrix Typing Speed")
+                .font(.subheadline.bold())
+
+            Picker("", selection: $selectedPreset) {
+                ForEach(AppSettings.CitrixTypingSpeedPreset.allCases) { preset in
+                    Text(preset.displayName).tag(preset)
+                }
+            }
+            .labelsHidden()
+            .onChange(of: selectedPreset) { _, newValue in
+                appState.settings.citrixTypingSpeedPreset = newValue
+                refreshEffectiveTimings()
+            }
+
+            Text(selectedPreset.detailText)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Text(effectiveTimings)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .onAppear {
+            selectedPreset = appState.settings.citrixTypingSpeedPreset
+            refreshEffectiveTimings()
+        }
+    }
+
+    private func refreshEffectiveTimings() {
+        let settings = appState.settings
+        effectiveTimings =
+            "Current timings: key \(settings.citrixTypingInterKeyDelayMs)ms • newline \(settings.citrixTypingNewlineDelayMs)ms • chunk \(settings.citrixTypingChunkSize) • pause \(settings.citrixTypingChunkPauseMs)ms • word pause \(settings.citrixTypingWordPauseMinMs)-\(settings.citrixTypingWordPauseMaxMs)ms • jitter ±\(settings.citrixTypingCharJitterMs)ms"
+    }
+}
+
 struct SettingsView: View {
     @Bindable var appState: AppState
     @State private var temperatureValue: Double = 0.3
@@ -231,6 +274,11 @@ struct SettingsView: View {
 
                 // MARK: - System Prompt
                 SystemPromptView(systemPrompt: $appState.settings.systemPrompt)
+
+                Divider()
+
+                // MARK: - Citrix Typing Preset
+                CitrixTypingPresetPickerView(appState: appState)
 
                 Divider()
 

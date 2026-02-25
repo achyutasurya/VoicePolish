@@ -146,4 +146,108 @@ final class AppSettingsTests: XCTestCase {
         settings.deepgramAPIKey = "new-key"
         XCTAssertEqual(AppSettings.shared.temperature, 1.0, "Temperature should remain unchanged")
     }
+
+    // MARK: - Citrix Typing Settings Tests
+
+    func testDefaultCitrixTypingSettings() {
+        UserDefaults.standard.removeObject(forKey: "citrixTypingSpeedPreset")
+        UserDefaults.standard.removeObject(forKey: "citrixTypingInterKeyDelayMs")
+        UserDefaults.standard.removeObject(forKey: "citrixTypingNewlineDelayMs")
+        UserDefaults.standard.removeObject(forKey: "citrixTypingChunkSize")
+        UserDefaults.standard.removeObject(forKey: "citrixTypingChunkPauseMs")
+        UserDefaults.standard.removeObject(forKey: "citrixTypingWordPauseMinMs")
+        UserDefaults.standard.removeObject(forKey: "citrixTypingWordPauseMaxMs")
+        UserDefaults.standard.removeObject(forKey: "citrixTypingCharJitterMs")
+
+        XCTAssertEqual(settings.citrixTypingSpeedPreset, .wpm50, "Default preset should be 50 words/min")
+        XCTAssertEqual(settings.citrixTypingInterKeyDelayMs, 90, "50 wpm inter-key delay should be 90ms")
+        XCTAssertEqual(settings.citrixTypingNewlineDelayMs, 220, "50 wpm newline delay should be 220ms")
+        XCTAssertEqual(settings.citrixTypingChunkSize, 40, "50 wpm chunk size should be 40")
+        XCTAssertEqual(settings.citrixTypingChunkPauseMs, 350, "50 wpm chunk pause should be 350ms")
+        XCTAssertEqual(settings.citrixTypingWordPauseMinMs, 500, "Default word pause min should be 500ms")
+        XCTAssertEqual(settings.citrixTypingWordPauseMaxMs, 1_000, "Default word pause max should be 1000ms")
+        XCTAssertEqual(settings.citrixTypingCharJitterMs, 25, "Default jitter should be 25ms")
+    }
+
+    func testSaveAndLoadCitrixTypingSettings() {
+        settings.citrixTypingInterKeyDelayMs = 8
+        settings.citrixTypingNewlineDelayMs = 20
+        settings.citrixTypingChunkSize = 300
+        settings.citrixTypingChunkPauseMs = 75
+        settings.citrixTypingWordPauseMinMs = 550
+        settings.citrixTypingWordPauseMaxMs = 900
+        settings.citrixTypingCharJitterMs = 10
+
+        let loaded = AppSettings.shared
+        XCTAssertEqual(loaded.citrixTypingInterKeyDelayMs, 8)
+        XCTAssertEqual(loaded.citrixTypingNewlineDelayMs, 20)
+        XCTAssertEqual(loaded.citrixTypingChunkSize, 300)
+        XCTAssertEqual(loaded.citrixTypingChunkPauseMs, 75)
+        XCTAssertEqual(loaded.citrixTypingWordPauseMinMs, 550)
+        XCTAssertEqual(loaded.citrixTypingWordPauseMaxMs, 900)
+        XCTAssertEqual(loaded.citrixTypingCharJitterMs, 10)
+    }
+
+    func testCitrixTypingPresetApplies50WpmTimings() {
+        settings.citrixTypingSpeedPreset = .wpm50
+
+        XCTAssertEqual(settings.citrixTypingInterKeyDelayMs, 90)
+        XCTAssertEqual(settings.citrixTypingNewlineDelayMs, 220)
+        XCTAssertEqual(settings.citrixTypingChunkSize, 40)
+        XCTAssertEqual(settings.citrixTypingChunkPauseMs, 350)
+        XCTAssertEqual(settings.citrixTypingWordPauseMinMs, 500)
+        XCTAssertEqual(settings.citrixTypingWordPauseMaxMs, 1_000)
+        XCTAssertEqual(settings.citrixTypingCharJitterMs, 25)
+    }
+
+    func testCitrixTypingPresetApplies80WpmTimings() {
+        settings.citrixTypingSpeedPreset = .wpm80
+
+        XCTAssertEqual(settings.citrixTypingInterKeyDelayMs, 50)
+        XCTAssertEqual(settings.citrixTypingNewlineDelayMs, 170)
+        XCTAssertEqual(settings.citrixTypingChunkSize, 80)
+        XCTAssertEqual(settings.citrixTypingChunkPauseMs, 240)
+        XCTAssertEqual(settings.citrixTypingWordPauseMinMs, 500)
+        XCTAssertEqual(settings.citrixTypingWordPauseMaxMs, 1_000)
+        XCTAssertEqual(settings.citrixTypingCharJitterMs, 25)
+    }
+
+    func testCitrixTypingPresetApplies120WpmTimings() {
+        settings.citrixTypingSpeedPreset = .wpm120
+
+        XCTAssertEqual(settings.citrixTypingInterKeyDelayMs, 20)
+        XCTAssertEqual(settings.citrixTypingNewlineDelayMs, 120)
+        XCTAssertEqual(settings.citrixTypingChunkSize, 120)
+        XCTAssertEqual(settings.citrixTypingChunkPauseMs, 180)
+        XCTAssertEqual(settings.citrixTypingWordPauseMinMs, 500)
+        XCTAssertEqual(settings.citrixTypingWordPauseMaxMs, 1_000)
+        XCTAssertEqual(settings.citrixTypingCharJitterMs, 25)
+    }
+
+    func testCitrixTypingPresetInfersFromExistingTiming() {
+        UserDefaults.standard.removeObject(forKey: "citrixTypingSpeedPreset")
+        UserDefaults.standard.set(90, forKey: "citrixTypingInterKeyDelayMs")
+
+        XCTAssertEqual(settings.citrixTypingSpeedPreset, .wpm50)
+        XCTAssertEqual(settings.citrixTypingInterKeyDelayMs, 90, "Existing timing should be preserved during inference")
+    }
+
+    func testCitrixTypingSettingsClampInvalidValues() {
+        settings.citrixTypingInterKeyDelayMs = -1
+        settings.citrixTypingNewlineDelayMs = -5
+        settings.citrixTypingChunkSize = 0
+        settings.citrixTypingChunkPauseMs = -10
+        settings.citrixTypingWordPauseMinMs = -1
+        settings.citrixTypingWordPauseMaxMs = -1
+        settings.citrixTypingCharJitterMs = -10
+
+        let loaded = AppSettings.shared
+        XCTAssertEqual(loaded.citrixTypingInterKeyDelayMs, 90, "Invalid inter-key delay should fall back to default")
+        XCTAssertEqual(loaded.citrixTypingNewlineDelayMs, 220, "Invalid newline delay should fall back to default")
+        XCTAssertEqual(loaded.citrixTypingChunkSize, 1, "Chunk size should clamp to 1")
+        XCTAssertEqual(loaded.citrixTypingChunkPauseMs, 350, "Invalid chunk pause should fall back to default")
+        XCTAssertEqual(loaded.citrixTypingWordPauseMinMs, 0, "Word pause min should clamp to 0")
+        XCTAssertEqual(loaded.citrixTypingWordPauseMaxMs, 0, "Word pause max should clamp to min")
+        XCTAssertEqual(loaded.citrixTypingCharJitterMs, 0, "Jitter should clamp to 0")
+    }
 }

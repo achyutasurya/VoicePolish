@@ -24,7 +24,7 @@ final class RecordingPopupController {
         previousApp = NSWorkspace.shared.frontmostApplication
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 220),
+            contentRect: NSRect(x: 0, y: 0, width: 390, height: 220),
             styleMask: [.titled, .closable, .nonactivatingPanel, .hudWindow],
             backing: .buffered,
             defer: false
@@ -97,7 +97,7 @@ struct RecordingPopupView: View {
             controlsView
         }
         .padding(20)
-        .frame(width: 300)
+        .frame(width: 360)
         .onChange(of: appState.shouldStopAndSend) { _, newValue in
             if newValue {
                 appState.shouldStopAndSend = false
@@ -234,6 +234,12 @@ struct RecordingPopupView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.blue)
 
+                Button(action: { Task { await stopAndCitrixSend() } }) {
+                    Label("Citrix Send", systemImage: "keyboard")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+
             case .paused:
                 Button(action: resumeRecording) {
                     Label("Resume", systemImage: "mic.fill")
@@ -250,6 +256,12 @@ struct RecordingPopupView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.blue)
+
+                Button(action: { Task { await stopAndCitrixSend() } }) {
+                    Label("Citrix Send", systemImage: "keyboard")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
 
             case .transcribing, .processing:
                 EmptyView()
@@ -329,44 +341,77 @@ struct RecordingPopupView: View {
     }
 
     private func stopAndSend() async {
+        await stopAndDeliver(using: .normal)
+    }
+
+    private func stopAndCitrixSend() async {
+        await stopAndDeliver(using: .citrixTyping)
+    }
+
+    private func stopAndDeliver(using mode: DeliveryMode) async {
+        let logger = appState.logger
+        let logPrefix = mode.logPrefix
+
+        guard let responseText = await prepareFinalText(logPrefix: logPrefix) else {
+            return
+        }
+
+        await focusTargetApp(logPrefix: logPrefix)
+
+        do {
+            switch mode {
+            case .normal:
+                logger.info("\(logPrefix): inserting text (\(responseText.count) chars) via clipboard paste...")
+                try await appState.textInsertionService.insertText(responseText)
+            case .citrixTyping:
+                logger.info("\(logPrefix): inserting text (\(responseText.count) chars) via Citrix typing...")
+                try await appState.textInsertionService.typeTextForCitrix(responseText)
+            }
+            logger.info("\(logPrefix): text insertion completed successfully")
+        } catch {
+            logger.error("\(logPrefix): text insertion failed - \(error)")
+        }
+    }
+
+    private func prepareFinalText(logPrefix: String) async -> String? {
         let logger = appState.logger
 
         // 1. Stop recording
-        logger.info("stopAndSend: stopping recording...")
+        logger.info("\(logPrefix): stopping recording...")
         popupState = .transcribing
         _ = appState.audioRecorder.stopRecording()
 
         // 2. Get audio data (and clean up temp file)
         guard let wavData = appState.audioRecorder.getAudioData() else {
-            logger.error("stopAndSend: no audio data")
+            logger.error("\(logPrefix): no audio data")
             popupState = .error("No audio data recorded")
             // Ensure temp file cleanup on error
             appState.audioRecorder.cancelRecording()
-            return
+            return nil
         }
-        logger.info("stopAndSend: got \(wavData.count) bytes of audio")
+        logger.info("\(logPrefix): got \(wavData.count) bytes of audio")
 
         // 3. Transcribe with Deepgram
         let transcript: String
         do {
-            logger.info("stopAndSend: sending to Deepgram...")
+            logger.info("\(logPrefix): sending to Deepgram...")
             transcript = try await appState.deepgramService.transcribeAudio(
                 wavData: wavData,
                 apiKey: appState.settings.deepgramAPIKey,
                 model: appState.settings.deepgramModel
             )
-            logger.info("stopAndSend: transcript received (\(transcript.count) chars): \(transcript)")
+            logger.info("\(logPrefix): transcript received (\(transcript.count) chars): \(transcript)")
         } catch {
-            logger.error("stopAndSend: transcription failed - \(error)")
+            logger.error("\(logPrefix): transcription failed - \(error)")
             popupState = .error("Transcription failed: \(error.localizedDescription)")
-            return
+            return nil
         }
 
         // 4. Process with LLM
         popupState = .processing
         let responseText: String
         do {
-            logger.info("stopAndSend: sending to OpenRouter model \(appState.settings.selectedModel) (temperature: \(appState.settings.temperature))...")
+            logger.info("\(logPrefix): sending to OpenRouter model \(appState.settings.selectedModel) (temperature: \(appState.settings.temperature))...")
             responseText = try await appState.openRouterService.processText(
                 transcript: transcript,
                 systemPrompt: appState.settings.systemPrompt,
@@ -374,24 +419,30 @@ struct RecordingPopupView: View {
                 apiKey: appState.settings.openRouterAPIKey,
                 temperature: appState.settings.temperature
             )
-            logger.info("stopAndSend: LLM response received (\(responseText.count) chars): \(responseText)")
+            logger.info("\(logPrefix): LLM response received (\(responseText.count) chars): \(responseText)")
         } catch {
-            logger.error("stopAndSend: LLM failed - \(error)")
+            logger.error("\(logPrefix): LLM failed - \(error)")
             popupState = .error("LLM processing failed: \(error.localizedDescription)")
-            return
+            return nil
         }
 
-        // 5. Determine the target app for pasting.
+        return responseText
+    }
+
+    private func focusTargetApp(logPrefix: String) async {
+        let logger = appState.logger
+
+        // 5. Determine the target app for insertion.
         //    Use the app that was frontmost when we opened the popup.
         //    But also check current frontmost as a fallback — the user may have
         //    switched apps while recording (in that case, we still try previousApp).
         let targetApp = RecordingPopupController.shared.previousApp
         let currentFront = NSWorkspace.shared.frontmostApplication
-        logger.info("stopAndSend: target app (from popup open): \(targetApp?.localizedName ?? "nil") (pid: \(targetApp?.processIdentifier ?? 0))")
-        logger.info("stopAndSend: current frontmost: \(currentFront?.localizedName ?? "nil") (pid: \(currentFront?.processIdentifier ?? 0))")
+        logger.info("\(logPrefix): target app (from popup open): \(targetApp?.localizedName ?? "nil") (pid: \(targetApp?.processIdentifier ?? 0))")
+        logger.info("\(logPrefix): current frontmost: \(currentFront?.localizedName ?? "nil") (pid: \(currentFront?.processIdentifier ?? 0))")
 
         // 6. Close popup
-        logger.info("stopAndSend: closing popup...")
+        logger.info("\(logPrefix): closing popup...")
         onClose()
 
         // Deactivate VoicePolish so it gives up being the active app
@@ -399,7 +450,7 @@ struct RecordingPopupView: View {
 
         // Re-activate the target app
         if let targetApp {
-            logger.info("stopAndSend: activating \(targetApp.localizedName ?? "unknown") (pid: \(targetApp.processIdentifier))...")
+            logger.info("\(logPrefix): activating \(targetApp.localizedName ?? "unknown") (pid: \(targetApp.processIdentifier))...")
             targetApp.activate()
         }
 
@@ -408,27 +459,27 @@ struct RecordingPopupView: View {
 
         // Log which app is now frontmost after activation
         let frontApp = NSWorkspace.shared.frontmostApplication
-        logger.info("stopAndSend: frontmost app after activation: \(frontApp?.localizedName ?? "nil") (pid: \(frontApp?.processIdentifier ?? 0))")
+        logger.info("\(logPrefix): frontmost app after activation: \(frontApp?.localizedName ?? "nil") (pid: \(frontApp?.processIdentifier ?? 0))")
 
         // Verify the correct app got focus
         if let targetApp, frontApp?.processIdentifier != targetApp.processIdentifier {
-            logger.error("stopAndSend: WARNING - focus went to \(frontApp?.localizedName ?? "nil") instead of \(targetApp.localizedName ?? "nil"). Retrying activation...")
+            logger.error("\(logPrefix): WARNING - focus went to \(frontApp?.localizedName ?? "nil") instead of \(targetApp.localizedName ?? "nil"). Retrying activation...")
             targetApp.activate()
             try? await Task.sleep(nanoseconds: 300_000_000)
             let retryFront = NSWorkspace.shared.frontmostApplication
-            logger.info("stopAndSend: after retry, frontmost is: \(retryFront?.localizedName ?? "nil") (pid: \(retryFront?.processIdentifier ?? 0))")
+            logger.info("\(logPrefix): after retry, frontmost is: \(retryFront?.localizedName ?? "nil") (pid: \(retryFront?.processIdentifier ?? 0))")
         }
+    }
 
-        // 7. Insert text via clipboard + Cmd+V
-        do {
-            logger.info("stopAndSend: inserting text (\(responseText.count) chars)...")
-            try await appState.textInsertionService.insertText(responseText)
-            logger.info("stopAndSend: text inserted successfully!")
-        } catch {
-            logger.error("stopAndSend: text insertion failed - \(error)")
-            return
+    private enum DeliveryMode {
+        case normal
+        case citrixTyping
+
+        var logPrefix: String {
+            switch self {
+            case .normal: return "stopAndSend"
+            case .citrixTyping: return "stopAndCitrixSend"
+            }
         }
-
-        logger.info("stopAndSend: complete!")
     }
 }

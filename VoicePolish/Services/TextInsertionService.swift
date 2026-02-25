@@ -58,6 +58,152 @@ final class TextInsertionService {
         try await Task.sleep(nanoseconds: 200_000_000) // 200ms
     }
 
+    /// Insert text by typing characters as keyboard events.
+    /// This path bypasses clipboard dependencies and is intended for remote sessions (for example Citrix).
+    func typeTextForCitrix(_ text: String) async throws {
+        let normalizedText = Self.normalizeCitrixTypingText(text)
+        guard !normalizedText.isEmpty else {
+            logger.info("Citrix typing: nothing to type (empty text)")
+            return
+        }
+
+        let preset = AppSettings.shared.citrixTypingSpeedPreset
+        let interKeyDelayMs = max(0, AppSettings.shared.citrixTypingInterKeyDelayMs)
+        let newlineDelayMs = max(0, AppSettings.shared.citrixTypingNewlineDelayMs)
+        let chunkSize = max(1, AppSettings.shared.citrixTypingChunkSize)
+        let chunkPauseMs = max(0, AppSettings.shared.citrixTypingChunkPauseMs)
+        let wordPauseMinMs = max(0, AppSettings.shared.citrixTypingWordPauseMinMs)
+        let wordPauseMaxMs = max(wordPauseMinMs, AppSettings.shared.citrixTypingWordPauseMaxMs)
+        let charJitterMs = max(0, AppSettings.shared.citrixTypingCharJitterMs)
+        let chunks = Self.makeCitrixTypingChunks(from: normalizedText, chunkSize: chunkSize)
+
+        logger.info(
+            "Citrix typing: start (preset=\(preset.rawValue), \(normalizedText.count) chars, delay=\(interKeyDelayMs)ms, newlineDelay=\(newlineDelayMs)ms, chunkSize=\(chunkSize), chunkPause=\(chunkPauseMs)ms, wordPause=\(wordPauseMinMs)-\(wordPauseMaxMs)ms, jitter=±\(charJitterMs)ms)"
+        )
+
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        var typedCharacters = 0
+
+        for (chunkIndex, chunk) in chunks.enumerated() {
+            for character in chunk {
+                try postCharacterForCitrix(character)
+                typedCharacters += 1
+
+                let delayMs = Self.nextDelayMsForCitrixCharacter(
+                    character,
+                    interKeyDelayMs: interKeyDelayMs,
+                    newlineDelayMs: newlineDelayMs,
+                    wordPauseMinMs: wordPauseMinMs,
+                    wordPauseMaxMs: wordPauseMaxMs,
+                    charJitterMs: charJitterMs
+                )
+                if delayMs > 0 {
+                    try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+                }
+            }
+
+            let isLastChunk = chunkIndex == chunks.count - 1
+            if !isLastChunk && chunkPauseMs > 0 {
+                try await Task.sleep(nanoseconds: UInt64(chunkPauseMs) * 1_000_000)
+            }
+        }
+
+        let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
+        logger.info("Citrix typing: complete (\(typedCharacters) chars in \(String(format: "%.2f", elapsed))s)")
+    }
+
+    private func postCharacterForCitrix(_ character: Character) throws {
+        switch character {
+        case "\n":
+            try postVirtualKey(CGKeyCode(kVK_Return))
+            return
+        case "\t":
+            try postVirtualKey(CGKeyCode(kVK_Tab))
+            return
+        default:
+            break
+        }
+
+        guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(0), keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(0), keyDown: false)
+        else {
+            logger.error("Citrix typing: failed to create unicode CGEvent")
+            throw TextInsertionError.eventCreationFailed
+        }
+
+        let utf16Units = Array(String(character).utf16)
+        utf16Units.withUnsafeBufferPointer { pointer in
+            guard let baseAddress = pointer.baseAddress else { return }
+            keyDown.keyboardSetUnicodeString(stringLength: pointer.count, unicodeString: baseAddress)
+            keyUp.keyboardSetUnicodeString(stringLength: pointer.count, unicodeString: baseAddress)
+        }
+
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+    }
+
+    private func postVirtualKey(_ keyCode: CGKeyCode) throws {
+        guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false)
+        else {
+            logger.error("Citrix typing: failed to create virtual key CGEvent")
+            throw TextInsertionError.eventCreationFailed
+        }
+
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+    }
+
+    nonisolated static func normalizeCitrixTypingText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+    }
+
+    nonisolated static func makeCitrixTypingChunks(from text: String, chunkSize: Int) -> [Substring] {
+        let safeChunkSize = max(1, chunkSize)
+        var chunks: [Substring] = []
+        var startIndex = text.startIndex
+
+        while startIndex < text.endIndex {
+            let endIndex = text.index(startIndex, offsetBy: safeChunkSize, limitedBy: text.endIndex) ?? text.endIndex
+            chunks.append(text[startIndex..<endIndex])
+            startIndex = endIndex
+        }
+
+        return chunks
+    }
+
+    nonisolated static func nextDelayMsForCitrixCharacter(
+        _ character: Character,
+        interKeyDelayMs: Int,
+        newlineDelayMs: Int,
+        wordPauseMinMs: Int,
+        wordPauseMaxMs: Int,
+        charJitterMs: Int
+    ) -> Int {
+        if character == " " {
+            let minDelay = max(0, wordPauseMinMs)
+            let maxDelay = max(minDelay, wordPauseMaxMs)
+            return Int.random(in: minDelay...maxDelay)
+        }
+
+        let baseDelay: Int
+        switch character {
+        case "\n":
+            baseDelay = max(0, newlineDelayMs)
+        default:
+            baseDelay = max(0, interKeyDelayMs)
+        }
+
+        guard charJitterMs > 0 else {
+            return baseDelay
+        }
+
+        let jitter = Int.random(in: -charJitterMs...charJitterMs)
+        return max(0, baseDelay + jitter)
+    }
+
     enum TextInsertionError: LocalizedError {
         case eventCreationFailed
         case accessibilityNotGranted
