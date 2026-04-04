@@ -168,6 +168,12 @@ struct CitrixTypingPresetPickerView: View {
 struct SettingsView: View {
     @Bindable var appState: AppState
     @State private var temperatureValue: Double = 0.3
+    @State private var selectedTab: SettingsTab = .settings
+
+    private enum SettingsTab {
+        case settings
+        case history
+    }
 
     private var temperatureDescription: String {
         switch temperatureValue {
@@ -185,6 +191,52 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            // Tab bar
+            HStack(spacing: 0) {
+                tabButton("Settings", systemImage: "gear", tab: .settings)
+                tabButton("History", systemImage: "clock.arrow.circlepath", tab: .history)
+            }
+            .padding(.horizontal)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
+            Divider()
+
+            // Tab content
+            switch selectedTab {
+            case .settings:
+                settingsContent
+            case .history:
+                HistoryView()
+            }
+        }
+        .frame(width: 480, height: 620)
+        .onAppear {
+            temperatureValue = appState.settings.temperature
+        }
+    }
+
+    private func tabButton(_ title: String, systemImage: String, tab: SettingsTab) -> some View {
+        Button {
+            selectedTab = tab
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: systemImage)
+                Text(title)
+            }
+            .font(.subheadline)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background(selectedTab == tab ? Color.accentColor.opacity(0.15) : Color.clear)
+            .foregroundColor(selectedTab == tab ? .accentColor : .secondary)
+            .cornerRadius(6)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var settingsContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("VoicePolish Settings")
@@ -338,10 +390,6 @@ struct SettingsView: View {
                 }
             }
             .padding()
-        }
-        .frame(width: 420, height: 600)
-        .onAppear {
-            temperatureValue = appState.settings.temperature
         }
     }
 }

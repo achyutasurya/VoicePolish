@@ -32,6 +32,19 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.5] — 2026-04-03
+
+### Added
+- **History tab**: New "History" tab in the menubar window showing past transcriptions alongside LLM outputs
+  - Side-by-side view: Deepgram transcript (left) and LLM response (right) for each recording
+  - Time-based filtering: Last 24 Hours, Last 7 Days, Last 30 Days, Last 3 Months (defaults to Last 24 Hours)
+  - Pagination with 8 entries per page
+  - Per-entry copy buttons for transcript and LLM output
+  - Bulk copy buttons: "Copy All Transcripts" and "Copy All LLM Outputs" for all filtered entries
+  - Clear All with confirmation dialog
+  - History persists across app restarts (stored as JSON in Application Support)
+- **Tabbed settings UI**: Settings window now has "Settings" and "History" tabs
+
 ## [0.3.4] — 2026-02-17
 
 ### Fixed

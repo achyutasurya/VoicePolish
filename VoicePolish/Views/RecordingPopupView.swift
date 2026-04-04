@@ -426,6 +426,9 @@ struct RecordingPopupView: View {
             return nil
         }
 
+        // Save to history
+        appState.historyService.addEntry(transcript: transcript, llmResponse: responseText)
+
         return responseText
     }
 

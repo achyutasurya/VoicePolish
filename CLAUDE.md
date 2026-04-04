@@ -31,7 +31,7 @@ VoicePolish is a macOS 14+ menubar-only app (LSUIElement=YES) built with Swift P
 
 ### Pipeline Flow
 
-Hotkey (Cmd+]) → auto-start recording → hotkey again (or Stop button) → Deepgram STT → OpenRouter LLM → clipboard + simulated Cmd+V paste → restore clipboard
+Hotkey (Cmd+]) → auto-start recording → hotkey again (or Stop button) → Deepgram STT → OpenRouter LLM → save to history → clipboard + simulated Cmd+V paste → restore clipboard
 
 ### Key Components
 
@@ -39,7 +39,7 @@ Hotkey (Cmd+]) → auto-start recording → hotkey again (or Stop button) → De
 
 **RecordingPopupView** (`Views/RecordingPopupView.swift`) — Contains both `RecordingPopupController` (NSPanel management) and the SwiftUI view. The NSPanel uses `.nonActivatingPanel` style mask so it does NOT steal focus from the target text field. The view drives a state machine: recording → transcribing → processing → done/error. The `stopAndSend()` method orchestrates the entire pipeline. Note: the popup opens with recording already in progress (popupState starts as `.recording`).
 
-**Services** — `DeepgramService` and `OpenRouterService` are Swift `actor` types for thread safety. `AudioRecorder` and `TextInsertionService` are `@MainActor`. `LoggingService` is `@unchecked Sendable` with thread-safe file writing. `AudioRecorder` reuses its `AVAudioEngine` instance across recordings (kept running with a permanent tap) to avoid cold-start delay; the engine is invalidated on audio device configuration changes.
+**Services** — `DeepgramService` and `OpenRouterService` are Swift `actor` types for thread safety. `AudioRecorder`, `TextInsertionService`, and `HistoryService` are `@MainActor`. `LoggingService` is `@unchecked Sendable` with thread-safe file writing. `AudioRecorder` reuses its `AVAudioEngine` instance across recordings (kept running with a permanent tap) to avoid cold-start delay; the engine is invalidated on audio device configuration changes.
 
 ### Audio Engine Lifecycle
 
@@ -53,6 +53,14 @@ The `AudioRecorder` engine lifecycle uses a state machine (`stopped → warmingU
 - **Device identification**: `getDefaultInputDeviceName()` queries CoreAudio for the default input device name and UID, logged during warmup and displayed in Settings.
 
 **AppSettings** (`Models/AppSettings.swift`) — Singleton wrapping UserDefaults via computed properties. Note: `@Observable` does not properly track these computed properties, so views that need reactive updates use local `@State` variables (see `LLMModelPickerView.displayedModel`).
+
+### History
+
+**HistoryService** (`Services/HistoryService.swift`) — `@MainActor @Observable` singleton that persists transcript/LLM response pairs as JSON at `~/Library/Application Support/VoicePolish/history.json`. Entries are saved at the end of `prepareFinalText()` in `RecordingPopupView` after both Deepgram and OpenRouter succeed. The in-memory `[HistoryEntry]` array is loaded from disk on init and written atomically on every mutation. Uses ISO 8601 date encoding.
+
+**HistoryView** (`Views/HistoryView.swift`) — Displayed in the "History" tab of the menubar window. Shows entries with transcript (left) and LLM output (right) side by side. Features time-based filtering (Last 24 Hours default, Last 7 Days, Last 30 Days, Last 3 Months), pagination (8 items/page), per-entry and bulk copy buttons, and inline Clear All confirmation. Note: `.alert()` cannot be used in `MenuBarExtra` windows — it opens a system dialog that dismisses the menubar popover. Use inline confirmation UI instead.
+
+**SettingsView** (`Views/SettingsView.swift`) — Uses a custom tab bar (Settings / History) implemented as manual `HStack` buttons, not SwiftUI `TabView`. The existing settings content is extracted into a `settingsContent` computed property. Window size is 480x620 to accommodate the side-by-side history layout.
 
 ### Focus Management
 

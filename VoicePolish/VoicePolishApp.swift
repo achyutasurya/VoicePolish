@@ -23,6 +23,7 @@ final class AppState {
     var settings = AppSettings.shared
     let logger = LoggingService.shared
     let permissionManager = PermissionManager()
+    let historyService = HistoryService.shared
 
     var customModelInput = ""
 
