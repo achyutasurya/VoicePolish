@@ -251,10 +251,12 @@ struct SettingsView: View {
     @Bindable var appState: AppState
     @State private var temperatureValue: Double = 0.3
     @State private var selectedTab: SettingsTab = .settings
+    @State private var sendToLLMEnabled: Bool = true
 
     private enum SettingsTab {
         case settings
         case history
+        case errors
     }
 
     private var temperatureDescription: String {
@@ -278,6 +280,15 @@ struct SettingsView: View {
             HStack(spacing: 0) {
                 tabButton("Settings", systemImage: "gear", tab: .settings)
                 tabButton("History", systemImage: "clock.arrow.circlepath", tab: .history)
+                tabButton("Errors", systemImage: "exclamationmark.triangle", tab: .errors)
+                    .overlay(alignment: .topTrailing) {
+                        if ErrorService.shared.hasRecentErrors {
+                            Circle()
+                                .fill(.red)
+                                .frame(width: 6, height: 6)
+                                .offset(x: -8, y: 4)
+                        }
+                    }
             }
             .padding(.horizontal)
             .padding(.top, 8)
@@ -291,11 +302,14 @@ struct SettingsView: View {
                 settingsContent
             case .history:
                 HistoryView()
+            case .errors:
+                ErrorsView()
             }
         }
-        .frame(width: 480, height: 620)
+        .frame(width: 520, height: 620)
         .onAppear {
             temperatureValue = appState.settings.temperature
+            sendToLLMEnabled = appState.settings.sendToLLMEnabled
         }
     }
 
@@ -370,47 +384,63 @@ struct SettingsView: View {
 
                 Divider()
 
-                // MARK: - OpenRouter API Key
-                APIKeyView(
-                    title: "OpenRouter API Key",
-                    placeholder: "sk-or-v1-...",
-                    apiKey: $appState.settings.openRouterAPIKey,
-                    isValid: appState.settings.isOpenRouterKeyValid,
-                    errorMessage: appState.settings.openRouterKeyError,
-                    credits: appState.settings.openRouterKeyCredits.isEmpty ? nil : appState.settings.openRouterKeyCredits,
-                    onVerify: {
-                        await appState.openRouterService.verifyAPIKey(appState.settings)
-                    }
-                )
-
-                // MARK: - LLM Model
-                LLMModelPickerView(appState: appState)
-
-                // MARK: - Temperature
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Temperature")
-                            .font(.subheadline.bold())
-                        Spacer()
-                        Text(String(format: "%.2f", temperatureValue))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    Slider(value: $temperatureValue, in: 0.0...2.0, step: 0.1)
-                        .onChange(of: temperatureValue) { _, newValue in
-                            appState.settings.temperature = newValue
+                // MARK: - Send to LLM Toggle
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Send to LLM", isOn: $sendToLLMEnabled)
+                        .font(.subheadline.bold())
+                        .onChange(of: sendToLLMEnabled) { _, newValue in
+                            appState.settings.sendToLLMEnabled = newValue
                         }
-
-                    Text(temperatureDescription)
+                    Text("When disabled, raw transcript is pasted directly without LLM processing")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
-                Divider()
+                // MARK: - OpenRouter API Key
+                Group {
+                    APIKeyView(
+                        title: "OpenRouter API Key",
+                        placeholder: "sk-or-v1-...",
+                        apiKey: $appState.settings.openRouterAPIKey,
+                        isValid: appState.settings.isOpenRouterKeyValid,
+                        errorMessage: appState.settings.openRouterKeyError,
+                        credits: appState.settings.openRouterKeyCredits.isEmpty ? nil : appState.settings.openRouterKeyCredits,
+                        onVerify: {
+                            await appState.openRouterService.verifyAPIKey(appState.settings)
+                        }
+                    )
 
-                // MARK: - System Prompt
-                SystemPromptView(systemPrompt: $appState.settings.systemPrompt)
+                    // MARK: - LLM Model
+                    LLMModelPickerView(appState: appState)
+
+                    // MARK: - Temperature
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Temperature")
+                                .font(.subheadline.bold())
+                            Spacer()
+                            Text(String(format: "%.2f", temperatureValue))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Slider(value: $temperatureValue, in: 0.0...2.0, step: 0.1)
+                            .onChange(of: temperatureValue) { _, newValue in
+                                appState.settings.temperature = newValue
+                            }
+
+                        Text(temperatureDescription)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Divider()
+
+                    // MARK: - System Prompt
+                    SystemPromptView(systemPrompt: $appState.settings.systemPrompt)
+                }
+                .disabled(!sendToLLMEnabled)
+                .opacity(sendToLLMEnabled ? 1 : 0.5)
 
                 Divider()
 

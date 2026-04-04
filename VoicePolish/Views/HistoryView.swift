@@ -144,7 +144,7 @@ struct HistoryView: View {
     }
 
     private func copyAllLLMOutputs() {
-        let text = filtered.map { $0.llmResponse }.joined(separator: "\n\n")
+        let text = filtered.compactMap { $0.llmResponse }.filter { !$0.isEmpty }.joined(separator: "\n\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
@@ -169,12 +169,13 @@ struct HistoryEntryCard: View {
                 .buttonStyle(.borderless)
 
                 Button {
-                    copyToClipboard(entry.llmResponse)
+                    copyToClipboard(entry.llmResponse ?? "")
                 } label: {
                     Image(systemName: "doc.on.doc.fill")
                 }
                 .help("Copy LLM response")
                 .buttonStyle(.borderless)
+                .disabled(entry.llmResponse == nil || entry.llmResponse?.isEmpty == true)
             }
             .font(.caption)
             .foregroundColor(.secondary)
@@ -194,18 +195,34 @@ struct HistoryEntryCard: View {
                 .background(Color.gray.opacity(0.08))
                 .cornerRadius(4)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("LLM Output")
-                        .font(.caption2.bold())
-                        .foregroundColor(.secondary)
-                    Text(entry.llmResponse)
-                        .font(.caption)
-                        .lineLimit(4)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                if let llmResponse = entry.llmResponse, !llmResponse.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("LLM Output")
+                            .font(.caption2.bold())
+                            .foregroundColor(.secondary)
+                        Text(llmResponse)
+                            .font(.caption)
+                            .lineLimit(4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(6)
+                    .background(Color.blue.opacity(0.06))
+                    .cornerRadius(4)
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Transcript Only")
+                            .font(.caption2.bold())
+                            .foregroundColor(.secondary)
+                        Text("No LLM processing")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .italic()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(6)
+                    .background(Color.gray.opacity(0.04))
+                    .cornerRadius(4)
                 }
-                .padding(6)
-                .background(Color.blue.opacity(0.06))
-                .cornerRadius(4)
             }
         }
         .padding(8)

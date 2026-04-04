@@ -144,19 +144,43 @@ actor OpenRouterService {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        logger.info("Sending transcript to OpenRouter. Model: \(model), Length: \(transcript.count) chars")
+        let requestSize = request.httpBody?.count ?? 0
+        logger.info("Sending transcript to OpenRouter. Model: \(model), Length: \(transcript.count) chars, Request: \(requestSize) bytes")
 
+        let startTime = CFAbsoluteTimeGetCurrent()
         let (data, response) = try await URLSession.shared.data(for: request)
+        let duration = CFAbsoluteTimeGetCurrent() - startTime
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OpenRouterError.invalidResponse
         }
 
-        logger.info("OpenRouter response: HTTP \(httpResponse.statusCode)")
+        let responseHeaders = httpResponse.allHeaderFields
+
+        logger.apiCall(
+            service: "OpenRouter",
+            endpoint: "\(baseURL)/chat/completions",
+            method: "POST",
+            requestSize: requestSize,
+            statusCode: httpResponse.statusCode,
+            responseSize: data.count,
+            duration: duration,
+            headers: responseHeaders
+        )
 
         guard httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
-            logger.error("OpenRouter error: \(errorBody)")
+            logger.apiCall(
+                service: "OpenRouter",
+                endpoint: "\(baseURL)/chat/completions",
+                method: "POST",
+                requestSize: requestSize,
+                statusCode: httpResponse.statusCode,
+                responseSize: data.count,
+                duration: duration,
+                headers: responseHeaders,
+                error: errorBody
+            )
             throw OpenRouterError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
         }
 
@@ -170,6 +194,11 @@ actor OpenRouterService {
             throw OpenRouterError.emptyResponse
         }
 
+        // Log token usage if available
+        if let usage = decoded.usage {
+            logger.info("OpenRouter usage: prompt=\(usage.prompt_tokens ?? 0) completion=\(usage.completion_tokens ?? 0) total=\(usage.total_tokens ?? 0) model=\(decoded.model ?? model)")
+        }
+
         logger.info("OpenRouter response received (\(text.count) chars)")
         return text
     }
@@ -179,6 +208,8 @@ actor OpenRouterService {
     struct ChatCompletionResponse: Codable {
         let choices: [Choice]?
         let error: ErrorResponse?
+        let usage: Usage?
+        let model: String?
 
         struct Choice: Codable {
             let message: Message
@@ -191,6 +222,12 @@ actor OpenRouterService {
         struct ErrorResponse: Codable {
             let message: String
             let code: Int?
+        }
+
+        struct Usage: Codable {
+            let prompt_tokens: Int?
+            let completion_tokens: Int?
+            let total_tokens: Int?
         }
     }
 

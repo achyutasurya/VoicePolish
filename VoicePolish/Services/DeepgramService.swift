@@ -85,13 +85,26 @@ actor DeepgramService {
 
         logger.info("Sending audio to Deepgram. Model: \(model), Size: \(wavData.count) bytes, URL: \(urlString)")
 
+        let startTime = CFAbsoluteTimeGetCurrent()
         let (data, response) = try await URLSession.shared.data(for: request)
+        let duration = CFAbsoluteTimeGetCurrent() - startTime
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw DeepgramError.invalidResponse
         }
 
-        logger.info("Deepgram response: HTTP \(httpResponse.statusCode)")
+        let responseHeaders = httpResponse.allHeaderFields
+
+        logger.apiCall(
+            service: "Deepgram",
+            endpoint: urlString,
+            method: "POST",
+            requestSize: wavData.count,
+            statusCode: httpResponse.statusCode,
+            responseSize: data.count,
+            duration: duration,
+            headers: responseHeaders
+        )
 
         // Handle rate limiting with automatic retry
         if httpResponse.statusCode == 429 {
@@ -114,7 +127,17 @@ actor DeepgramService {
 
         guard httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
-            logger.error("Deepgram error: \(errorBody)")
+            logger.apiCall(
+                service: "Deepgram",
+                endpoint: urlString,
+                method: "POST",
+                requestSize: wavData.count,
+                statusCode: httpResponse.statusCode,
+                responseSize: data.count,
+                duration: duration,
+                headers: responseHeaders,
+                error: errorBody
+            )
             throw DeepgramError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
         }
 

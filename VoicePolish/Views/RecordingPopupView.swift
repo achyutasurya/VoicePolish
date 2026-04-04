@@ -370,11 +370,13 @@ struct RecordingPopupView: View {
             logger.info("\(logPrefix): text insertion completed successfully")
         } catch {
             logger.error("\(logPrefix): text insertion failed - \(error)")
+            appState.errorService.addError(source: .textInsertion, severity: .error, message: "Text insertion failed", details: error.localizedDescription)
         }
     }
 
     private func prepareFinalText(logPrefix: String) async -> String? {
         let logger = appState.logger
+        let pipelineStart = CFAbsoluteTimeGetCurrent()
 
         // 1. Stop recording
         logger.info("\(logPrefix): stopping recording...")
@@ -382,18 +384,22 @@ struct RecordingPopupView: View {
         _ = appState.audioRecorder.stopRecording()
 
         // 2. Get audio data (and clean up temp file)
+        let audioStart = CFAbsoluteTimeGetCurrent()
         guard let wavData = appState.audioRecorder.getAudioData() else {
             logger.error("\(logPrefix): no audio data")
+            appState.errorService.addError(source: .audioRecorder, severity: .error, message: "No audio data recorded")
             popupState = .error("No audio data recorded")
             // Ensure temp file cleanup on error
             appState.audioRecorder.cancelRecording()
             return nil
         }
+        logger.pipelineStep("audio capture", duration: CFAbsoluteTimeGetCurrent() - audioStart)
         logger.info("\(logPrefix): got \(wavData.count) bytes of audio")
 
         // 3. Transcribe with Deepgram
         let transcript: String
         do {
+            let transcribeStart = CFAbsoluteTimeGetCurrent()
             logger.info("\(logPrefix): sending to Deepgram...")
             transcript = try await appState.deepgramService.transcribeAudio(
                 wavData: wavData,
@@ -402,36 +408,52 @@ struct RecordingPopupView: View {
                 keyterms: appState.settings.deepgramKeyterms,
                 vocabularyEnabled: appState.settings.deepgramVocabularyEnabled
             )
+            logger.pipelineStep("Deepgram transcription", duration: CFAbsoluteTimeGetCurrent() - transcribeStart)
             logger.info("\(logPrefix): transcript received (\(transcript.count) chars): \(transcript)")
         } catch {
             logger.error("\(logPrefix): transcription failed - \(error)")
+            appState.errorService.addError(source: .deepgram, severity: .error, message: "Transcription failed", details: error.localizedDescription)
             popupState = .error("Transcription failed: \(error.localizedDescription)")
             return nil
         }
 
-        // 4. Process with LLM
-        popupState = .processing
-        let responseText: String
-        do {
-            logger.info("\(logPrefix): sending to OpenRouter model \(appState.settings.selectedModel) (temperature: \(appState.settings.temperature))...")
-            responseText = try await appState.openRouterService.processText(
-                transcript: transcript,
-                systemPrompt: appState.settings.systemPrompt,
-                model: appState.settings.selectedModel,
-                apiKey: appState.settings.openRouterAPIKey,
-                temperature: appState.settings.temperature
-            )
-            logger.info("\(logPrefix): LLM response received (\(responseText.count) chars): \(responseText)")
-        } catch {
-            logger.error("\(logPrefix): LLM failed - \(error)")
-            popupState = .error("LLM processing failed: \(error.localizedDescription)")
-            return nil
+        // 3a. Save transcript to history immediately (progressive save)
+        let entryId = appState.historyService.addEntry(transcript: transcript)
+        logger.info("\(logPrefix): saved transcript to history (entry: \(entryId))")
+
+        // 4. Process with LLM (if enabled)
+        if appState.settings.sendToLLMEnabled {
+            popupState = .processing
+            do {
+                let llmStart = CFAbsoluteTimeGetCurrent()
+                logger.info("\(logPrefix): sending to OpenRouter model \(appState.settings.selectedModel) (temperature: \(appState.settings.temperature))...")
+                let responseText = try await appState.openRouterService.processText(
+                    transcript: transcript,
+                    systemPrompt: appState.settings.systemPrompt,
+                    model: appState.settings.selectedModel,
+                    apiKey: appState.settings.openRouterAPIKey,
+                    temperature: appState.settings.temperature
+                )
+                logger.pipelineStep("OpenRouter LLM", duration: CFAbsoluteTimeGetCurrent() - llmStart)
+                logger.info("\(logPrefix): LLM response received (\(responseText.count) chars): \(responseText)")
+
+                // Update the same history entry with LLM response
+                appState.historyService.updateEntry(id: entryId, llmResponse: responseText)
+
+                logger.pipelineStep("total pipeline", duration: CFAbsoluteTimeGetCurrent() - pipelineStart)
+                return responseText
+            } catch {
+                logger.error("\(logPrefix): LLM failed - \(error)")
+                appState.errorService.addError(source: .openRouter, severity: .error, message: "LLM processing failed", details: error.localizedDescription)
+                popupState = .error("LLM processing failed: \(error.localizedDescription)")
+                // Transcript is already saved to history
+                return nil
+            }
+        } else {
+            logger.info("\(logPrefix): LLM disabled, using raw transcript")
+            logger.pipelineStep("total pipeline (no LLM)", duration: CFAbsoluteTimeGetCurrent() - pipelineStart)
+            return transcript
         }
-
-        // Save to history
-        appState.historyService.addEntry(transcript: transcript, llmResponse: responseText)
-
-        return responseText
     }
 
     private func focusTargetApp(logPrefix: String) async {

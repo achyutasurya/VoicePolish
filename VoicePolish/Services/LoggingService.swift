@@ -33,6 +33,57 @@ final class LoggingService: @unchecked Sendable {
         writeToFile("DEBUG", message)
     }
 
+    /// Structured log for API calls with HTTP details, timing, and rate-limit headers
+    func apiCall(
+        service: String,
+        endpoint: String,
+        method: String,
+        requestSize: Int,
+        statusCode: Int?,
+        responseSize: Int?,
+        duration: TimeInterval,
+        headers: [AnyHashable: Any]? = nil,
+        error: String? = nil
+    ) {
+        var parts: [String] = []
+        parts.append("[\(service)] \(method) \(endpoint)")
+        parts.append("request: \(formatBytes(requestSize))")
+        if let code = statusCode {
+            parts.append("status: \(code)")
+        }
+        if let size = responseSize {
+            parts.append("response: \(formatBytes(size))")
+        }
+        parts.append("duration: \(String(format: "%.1fms", duration * 1000))")
+
+        if let headers {
+            let rateLimitKeys = ["x-ratelimit-remaining", "x-ratelimit-limit", "x-ratelimit-reset", "retry-after"]
+            for key in rateLimitKeys {
+                if let value = headers[key] ?? headers[key.capitalized] {
+                    parts.append("\(key): \(value)")
+                }
+            }
+        }
+
+        let message = parts.joined(separator: " | ")
+        if let error {
+            self.error("\(message) | error: \(error)")
+        } else {
+            info(message)
+        }
+    }
+
+    /// Log pipeline step timing
+    func pipelineStep(_ step: String, duration: TimeInterval) {
+        info("Pipeline: \(step) completed in \(String(format: "%.1fms", duration * 1000))")
+    }
+
+    private func formatBytes(_ bytes: Int) -> String {
+        if bytes < 1024 { return "\(bytes)B" }
+        if bytes < 1024 * 1024 { return String(format: "%.1fKB", Double(bytes) / 1024.0) }
+        return String(format: "%.1fMB", Double(bytes) / (1024.0 * 1024.0))
+    }
+
     private func writeToFile(_ level: String, _ message: String) {
         queue.async { [logDirectoryURL] in
             let dateFormatter = DateFormatter()

@@ -22,11 +22,23 @@ final class HistoryService {
 
     // MARK: - Public API
 
-    func addEntry(transcript: String, llmResponse: String) {
+    @discardableResult
+    func addEntry(transcript: String, llmResponse: String? = nil) -> UUID {
         let entry = HistoryEntry(transcript: transcript, llmResponse: llmResponse)
         entries.insert(entry, at: 0)
         saveToDisk()
-        logger.info("History: saved entry (\(transcript.count) transcript chars, \(llmResponse.count) response chars)")
+        logger.info("History: saved entry (\(transcript.count) transcript chars, \(llmResponse?.count ?? 0) response chars)")
+        return entry.id
+    }
+
+    func updateEntry(id: UUID, llmResponse: String) {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else {
+            logger.error("History: cannot update entry \(id) — not found")
+            return
+        }
+        entries[index].llmResponse = llmResponse
+        saveToDisk()
+        logger.info("History: updated entry \(id) with LLM response (\(llmResponse.count) chars)")
     }
 
     func getEntries(filter: HistoryTimeFilter) -> [HistoryEntry] {

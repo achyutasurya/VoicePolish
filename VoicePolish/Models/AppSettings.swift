@@ -143,6 +143,18 @@ final class AppSettings {
         }
     }
 
+    var sendToLLMEnabled: Bool {
+        get {
+            // Default to true — UserDefaults.bool returns false for missing keys,
+            // which would silently break LLM processing for existing users on upgrade.
+            if UserDefaults.standard.object(forKey: "sendToLLMEnabled") == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "sendToLLMEnabled")
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "sendToLLMEnabled") }
+    }
+
     var openRouterAPIKey: String {
         get { UserDefaults.standard.string(forKey: "openRouterAPIKey") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "openRouterAPIKey") }

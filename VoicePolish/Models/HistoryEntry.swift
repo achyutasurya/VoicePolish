@@ -4,9 +4,9 @@ struct HistoryEntry: Identifiable, Codable {
     let id: UUID
     let timestamp: Date
     let transcript: String
-    let llmResponse: String
+    var llmResponse: String?
 
-    init(transcript: String, llmResponse: String) {
+    init(transcript: String, llmResponse: String? = nil) {
         self.id = UUID()
         self.timestamp = Date()
         self.transcript = transcript

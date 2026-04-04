@@ -24,6 +24,7 @@ final class AppState {
     let logger = LoggingService.shared
     let permissionManager = PermissionManager()
     let historyService = HistoryService.shared
+    let errorService = ErrorService.shared
 
     var customModelInput = ""
 
@@ -74,6 +75,7 @@ final class AppState {
                         self.logger.info("Proactive engine recovery after config change successful")
                     } catch {
                         self.logger.error("Proactive engine recovery failed: \(error)")
+                        self.errorService.addError(source: .audioRecorder, severity: .error, message: "Proactive engine recovery failed", details: error.localizedDescription)
                     }
                 }
             }
@@ -113,9 +115,11 @@ final class AppState {
                 logger.error("Deepgram API key not configured")
                 return
             }
-            guard !settings.openRouterAPIKey.isEmpty else {
-                logger.error("OpenRouter API key not configured")
-                return
+            if settings.sendToLLMEnabled {
+                guard !settings.openRouterAPIKey.isEmpty else {
+                    logger.error("OpenRouter API key not configured")
+                    return
+                }
             }
 
             permissionManager.checkMicrophonePermission()
@@ -127,6 +131,7 @@ final class AppState {
             } catch AudioRecorder.RecorderError.engineBroken(let reason) {
                 // Engine is broken — show popup and attempt recovery
                 logger.error("Engine is broken (\(reason)), attempting recovery")
+                errorService.addError(source: .audioRecorder, severity: .critical, message: "Audio engine broken", details: reason)
                 controller.showPopup(appState: self)
                 Task { @MainActor in
                     do {
@@ -135,6 +140,7 @@ final class AppState {
                         logger.info("Recovery and recording started successfully")
                     } catch {
                         logger.error("Failed to recover engine or start recording: \(error)")
+                        errorService.addError(source: .audioRecorder, severity: .error, message: "Engine recovery failed", details: error.localizedDescription)
                         controller.closePopup(appState: self)
                     }
                 }
@@ -150,12 +156,14 @@ final class AppState {
                         logger.info("Warmup complete, recording started")
                     } catch {
                         logger.error("Failed to start recording after warmup: \(error)")
+                        errorService.addError(source: .audioRecorder, severity: .error, message: "Failed to start recording after warmup", details: error.localizedDescription)
                         controller.closePopup(appState: self)
                     }
                 }
                 return
             } catch {
                 logger.error("Failed to start recording: \(error)")
+                errorService.addError(source: .audioRecorder, severity: .error, message: "Failed to start recording", details: error.localizedDescription)
                 return
             }
 
