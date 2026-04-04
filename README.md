@@ -15,7 +15,10 @@ VoicePolish is a lightweight macOS menubar application that transforms raw voice
 🎤 **Voice Recording** - Global hotkey activation (Cmd+]) for quick recording
 🧠 **AI Transcription** - Uses Deepgram's advanced speech-to-text engine
 ✨ **LLM Refinement** - Cleans up transcription with OpenRouter-powered AI models
-📋 **Auto-Paste** - Automatically pastes refined text into any application
+📋 **Auto-Paste** - Automatically pastes refined text into any application (Cmd+V)
+⌨️ **Stop & Type** - Character-by-character typing simulation for Citrix/VDI environments where clipboard paste doesn't work. Configurable speed presets (50/80/120 WPM)
+📖 **Custom Vocabulary** - Boost Deepgram's recognition of domain-specific words (e.g., "Tavily", "MCP", "Context7") with keyterm prompting for Nova-3 or keyword boosting for older models. Toggle on/off in settings
+📜 **History** - Browse past transcriptions alongside their LLM-processed outputs. Filter by time range, paginate, and bulk-copy transcripts or LLM outputs
 ⚙️ **Customizable** - Configure temperature, model selection, and system prompts
 🔧 **Privacy-Focused** - All processing respects your configured API keys
 
@@ -29,24 +32,27 @@ VoicePolish is a lightweight macOS menubar application that transforms raw voice
 
 ## Installation
 
-### Option 1: Build from Source
+### Option 1: Download Pre-built App
+
+1. Download `VoicePolish.app` from the [`releases/`](releases/) folder
+2. Move it to `/Applications/`
+3. Right-click the app → **Open** (required on first launch since the app is ad-hoc signed)
+4. Grant Microphone and Accessibility permissions when prompted
+
+### Option 2: Build from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/achyutasurya/VoicePolish---AI-Powered-Voice-to-Text-Refiner-macOS-.git
-cd VoicePolish---AI-Powered-Voice-to-Text-Refiner-macOS-
+git clone https://github.com/achyutasurya/VoicePolish.git
+cd VoicePolish
 
 # Build the release app
 bash build.sh
 
-# Run the app
-open VoicePolish.app
-```
-
-### Option 2: Using Swift Package Manager
-
-```bash
-swift build -c release
+# Deploy to /Applications
+cp -R VoicePolish.app /Applications/
+rm -rf VoicePolish.app
+open /Applications/VoicePolish.app
 ```
 
 ## Quick Start
@@ -62,7 +68,7 @@ swift build -c release
 3. **Configure Settings**
    - Enter your Deepgram API key
    - Enter your OpenRouter API key
-   - Select your preferred LLM model (Mistral Nemo recommended for speed/cost)
+   - Select your preferred LLM model (Gemini 2.5 Flash recommended)
    - Set temperature (0.0 = deterministic, 1.0+ = creative)
 
 4. **Grant Permissions**
@@ -71,19 +77,21 @@ swift build -c release
 
 5. **Start Using**
    - Press `Cmd+]` to start recording
-   - Press `Cmd+]` again to stop and process
-   - Text auto-pastes into your active app!
+   - Press `Cmd+]` again (or click **Stop & Paste**) to stop and auto-paste into your active app
+   - Use **Stop & Type** instead for Citrix/VDI environments where clipboard paste doesn't work
+   - Press `Cmd+[` to cancel a recording without sending
 
 ## Configuration
 
 ### Available LLM Models
 
-- **DeepSeek Chat** (Recommended) - Cost-effective, consistent results
-- Claude 3 Haiku - Fastest response, high quality
+- **Gemini 2.5 Flash** (Recommended) - Fast, cost-effective, great results
+- DeepSeek Chat - Cost-effective alternative
+- Claude 3 Haiku - Fast response, high quality
 - Claude Sonnet 4 - Premium quality
 - GPT-4o - OpenAI's latest
-- Gemini 2.5 Flash - Google's fast model
 - Llama 3.3 70B - Open source option
+- Custom model support via model ID
 
 ### Temperature Settings
 
@@ -105,16 +113,18 @@ Start Recording (instant — before popup appears)
   ↓
 Show Recording Popup (non-activating, preserves focus)
   ↓
-Hotkey again (or Stop button)
+Hotkey again (or Stop & Paste / Stop & Type button)
   ↓
-Transcribe (Deepgram STT)
+Transcribe (Deepgram STT + custom vocabulary boosting)
   ↓
 Process with LLM (OpenRouter)
   ↓
-Re-activate target app → Paste (Cmd+V) → Restore clipboard
+Save to History
+  ↓
+Re-activate target app → Paste (Cmd+V) or Type (character-by-character) → Restore clipboard
 ```
 
-The audio engine is reused across recordings (kept stopped but alive) to eliminate cold-start delay. Recording starts before the popup renders to capture speech from the instant the hotkey is pressed.
+The audio engine is reused across recordings (kept running with a permanent tap) to eliminate cold-start delay. Recording starts before the popup renders to capture speech from the instant the hotkey is pressed.
 
 ## Versioning
 
@@ -147,30 +157,35 @@ VoicePolish/
 │   ├── VoicePolishApp.swift     # App entry point & AppState
 │   ├── Models/                  # Data models
 │   │   ├── AppSettings.swift    # User settings (UserDefaults)
-│   │   └── LLMModels.swift      # Available LLM models
+│   │   ├── LLMModels.swift      # Available LLM/Deepgram models
+│   │   ├── HistoryEntry.swift   # History record model
+│   │   └── HistoryTimeFilter.swift  # Time filter enum
 │   ├── Services/                # Business logic
 │   │   ├── AudioRecorder.swift  # AVAudioEngine recording
-│   │   ├── DeepgramService.swift
-│   │   ├── OpenRouterService.swift
-│   │   ├── TextInsertionService.swift
+│   │   ├── DeepgramService.swift    # Speech-to-text + custom vocabulary
+│   │   ├── OpenRouterService.swift  # LLM processing
+│   │   ├── TextInsertionService.swift  # Paste & type simulation
+│   │   ├── HistoryService.swift     # JSON-backed history persistence
 │   │   └── LoggingService.swift
 │   ├── Views/                   # SwiftUI interfaces
-│   │   ├── RecordingPopupView.swift
-│   │   ├── SettingsView.swift
-│   │   └── APIKeyView.swift
+│   │   ├── RecordingPopupView.swift  # Recording UI + pipeline
+│   │   ├── SettingsView.swift   # Tabbed settings (Settings/History)
+│   │   ├── HistoryView.swift    # History tab with filtering/pagination
+│   │   ├── APIKeyView.swift
+│   │   └── SystemPromptView.swift
 │   ├── Utilities/               # Helpers
 │   │   ├── AppVersion.swift     # Version constant
 │   │   ├── HotkeyManager.swift
 │   │   └── PermissionManager.swift
 │   └── Info.plist               # App configuration
+├── releases/                    # Pre-built app download
+│   └── VoicePolish.app
 ├── Package.swift                # SPM manifest
 ├── build.sh                     # Release build script
 ├── VERSION                      # Version source of truth
 ├── CHANGELOG.md                 # Version history & notes
-├── CLAUDE.md                    # Development guidance
 ├── LICENSE                      # MIT License
-├── README.md                    # This file
-└── .gitignore                   # Git exclusions
+└── README.md                    # This file
 ```
 
 ### Dependencies
