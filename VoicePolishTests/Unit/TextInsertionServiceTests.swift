@@ -28,13 +28,13 @@ final class TextInsertionServiceTests: XCTestCase {
             let delay = TextInsertionService.nextDelayMsForCitrixCharacter(
                 " ",
                 interKeyDelayMs: 90,
-                newlineDelayMs: 220,
-                wordPauseMinMs: 500,
-                wordPauseMaxMs: 1_000,
+                newlineDelayMs: 400,
+                wordPauseMinMs: 150,
+                wordPauseMaxMs: 250,
                 charJitterMs: 25
             )
-            XCTAssertGreaterThanOrEqual(delay, 500)
-            XCTAssertLessThanOrEqual(delay, 1_000)
+            XCTAssertGreaterThanOrEqual(delay, 150)
+            XCTAssertLessThanOrEqual(delay, 250)
         }
     }
 
@@ -43,9 +43,9 @@ final class TextInsertionServiceTests: XCTestCase {
             let delay = TextInsertionService.nextDelayMsForCitrixCharacter(
                 "a",
                 interKeyDelayMs: 90,
-                newlineDelayMs: 220,
-                wordPauseMinMs: 500,
-                wordPauseMaxMs: 1_000,
+                newlineDelayMs: 400,
+                wordPauseMinMs: 150,
+                wordPauseMaxMs: 250,
                 charJitterMs: 25
             )
             XCTAssertGreaterThanOrEqual(delay, 65)

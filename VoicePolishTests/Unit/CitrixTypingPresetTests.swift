@@ -5,31 +5,31 @@ final class CitrixTypingPresetTests: XCTestCase {
     func test50WpmPresetValues() {
         let preset = AppSettings.CitrixTypingSpeedPreset.wpm50
         XCTAssertEqual(preset.interKeyDelayMs, 90)
-        XCTAssertEqual(preset.newlineDelayMs, 220)
+        XCTAssertEqual(preset.newlineDelayMs, 400)
         XCTAssertEqual(preset.chunkSize, 40)
         XCTAssertEqual(preset.chunkPauseMs, 350)
-        XCTAssertEqual(preset.wordPauseMinMs, 500)
-        XCTAssertEqual(preset.wordPauseMaxMs, 1_000)
+        XCTAssertEqual(preset.wordPauseMinMs, 150)
+        XCTAssertEqual(preset.wordPauseMaxMs, 250)
     }
 
     func test80WpmPresetValues() {
         let preset = AppSettings.CitrixTypingSpeedPreset.wpm80
         XCTAssertEqual(preset.interKeyDelayMs, 50)
-        XCTAssertEqual(preset.newlineDelayMs, 170)
+        XCTAssertEqual(preset.newlineDelayMs, 400)
         XCTAssertEqual(preset.chunkSize, 80)
         XCTAssertEqual(preset.chunkPauseMs, 240)
-        XCTAssertEqual(preset.wordPauseMinMs, 500)
-        XCTAssertEqual(preset.wordPauseMaxMs, 1_000)
+        XCTAssertEqual(preset.wordPauseMinMs, 150)
+        XCTAssertEqual(preset.wordPauseMaxMs, 250)
     }
 
     func test120WpmPresetValues() {
         let preset = AppSettings.CitrixTypingSpeedPreset.wpm120
         XCTAssertEqual(preset.interKeyDelayMs, 20)
-        XCTAssertEqual(preset.newlineDelayMs, 120)
+        XCTAssertEqual(preset.newlineDelayMs, 400)
         XCTAssertEqual(preset.chunkSize, 120)
         XCTAssertEqual(preset.chunkPauseMs, 180)
-        XCTAssertEqual(preset.wordPauseMinMs, 500)
-        XCTAssertEqual(preset.wordPauseMaxMs, 1_000)
+        XCTAssertEqual(preset.wordPauseMinMs, 150)
+        XCTAssertEqual(preset.wordPauseMaxMs, 250)
     }
 
     func testPresetInference() {

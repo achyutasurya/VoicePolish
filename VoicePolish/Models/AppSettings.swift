@@ -24,11 +24,11 @@ final class AppSettings {
         var detailText: String {
             switch self {
             case .wpm50:
-                return "Safest profile with random 500-1000ms pause between words"
+                return "Safest profile with random 150-250ms pause between words"
             case .wpm80:
-                return "Faster key cadence with random 500-1000ms pause between words"
+                return "Faster key cadence with random 150-250ms pause between words"
             case .wpm120:
-                return "Fastest key cadence with random 500-1000ms pause between words"
+                return "Fastest key cadence with random 150-250ms pause between words"
             }
         }
 
@@ -42,9 +42,9 @@ final class AppSettings {
 
         var newlineDelayMs: Int {
             switch self {
-            case .wpm50: return 220
-            case .wpm80: return 170
-            case .wpm120: return 120
+            case .wpm50: return 400
+            case .wpm80: return 400
+            case .wpm120: return 400
             }
         }
 
@@ -64,8 +64,8 @@ final class AppSettings {
             }
         }
 
-        var wordPauseMinMs: Int { 500 }
-        var wordPauseMaxMs: Int { 1_000 }
+        var wordPauseMinMs: Int { 150 }
+        var wordPauseMaxMs: Int { 250 }
         var charJitterMs: Int { 25 }
 
         static func inferFrom(interKeyDelayMs: Int) -> Self {
@@ -194,7 +194,7 @@ final class AppSettings {
         get {
             let defaults = UserDefaults.standard
             if defaults.object(forKey: Self.keyCitrixWordPauseMinMs) == nil {
-                return 500
+                return 150
             }
             let value = defaults.integer(forKey: Self.keyCitrixWordPauseMinMs)
             return max(0, value)
@@ -212,7 +212,7 @@ final class AppSettings {
         get {
             let defaults = UserDefaults.standard
             if defaults.object(forKey: Self.keyCitrixWordPauseMaxMs) == nil {
-                return 1_000
+                return 250
             }
             let value = defaults.integer(forKey: Self.keyCitrixWordPauseMaxMs)
             return max(citrixTypingWordPauseMinMs, value)
@@ -264,6 +264,11 @@ final class AppSettings {
                existingRaw != mapped.rawValue {
                 defaults.set(mapped.rawValue, forKey: Self.keyCitrixTypingPreset)
                 applyCitrixTypingPreset(mapped)
+                return
+            }
+
+            if let mapped = mapCitrixPreset(rawValue: existingRaw) {
+                migrateLegacyCitrixPauseDefaultsIfNeeded(for: mapped, defaults: defaults)
             }
             return
         }
@@ -285,6 +290,45 @@ final class AppSettings {
 
         defaults.set(CitrixTypingSpeedPreset.wpm50.rawValue, forKey: Self.keyCitrixTypingPreset)
         applyCitrixTypingPreset(.wpm50)
+    }
+
+    private func migrateLegacyCitrixPauseDefaultsIfNeeded(
+        for preset: CitrixTypingSpeedPreset,
+        defaults: UserDefaults
+    ) {
+        let legacyNewlineDelayMs: Int
+        switch preset {
+        case .wpm50:
+            legacyNewlineDelayMs = 220
+        case .wpm80:
+            legacyNewlineDelayMs = 170
+        case .wpm120:
+            legacyNewlineDelayMs = 120
+        }
+
+        if defaults.object(forKey: Self.keyCitrixNewlineDelayMs) != nil &&
+            defaults.integer(forKey: Self.keyCitrixNewlineDelayMs) == legacyNewlineDelayMs {
+            defaults.set(preset.newlineDelayMs, forKey: Self.keyCitrixNewlineDelayMs)
+        }
+
+        let storedWordPauseMinMs: Int
+        if defaults.object(forKey: Self.keyCitrixWordPauseMinMs) != nil {
+            storedWordPauseMinMs = defaults.integer(forKey: Self.keyCitrixWordPauseMinMs)
+        } else {
+            storedWordPauseMinMs = 500
+        }
+
+        let storedWordPauseMaxMs: Int
+        if defaults.object(forKey: Self.keyCitrixWordPauseMaxMs) != nil {
+            storedWordPauseMaxMs = defaults.integer(forKey: Self.keyCitrixWordPauseMaxMs)
+        } else {
+            storedWordPauseMaxMs = 1_000
+        }
+
+        if storedWordPauseMinMs == 500 && storedWordPauseMaxMs == 1_000 {
+            defaults.set(preset.wordPauseMinMs, forKey: Self.keyCitrixWordPauseMinMs)
+            defaults.set(preset.wordPauseMaxMs, forKey: Self.keyCitrixWordPauseMaxMs)
+        }
     }
 
     private func mapCitrixPreset(rawValue: String) -> CitrixTypingSpeedPreset? {
