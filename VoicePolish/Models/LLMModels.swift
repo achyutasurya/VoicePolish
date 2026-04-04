@@ -5,11 +5,11 @@ struct LLMModel: Identifiable, Hashable {
     let displayName: String
 
     static let popularModels: [LLMModel] = [
-        LLMModel(id: "deepseek/deepseek-chat", displayName: "DeepSeek Chat (Recommended)"),
+        LLMModel(id: "google/gemini-2.5-flash", displayName: "Gemini 2.5 Flash (Recommended)"),
+        LLMModel(id: "deepseek/deepseek-chat", displayName: "DeepSeek Chat"),
         LLMModel(id: "anthropic/claude-3-haiku", displayName: "Claude 3 Haiku"),
         LLMModel(id: "anthropic/claude-sonnet-4", displayName: "Claude Sonnet 4"),
         LLMModel(id: "openai/gpt-4o", displayName: "GPT-4o"),
-        LLMModel(id: "google/gemini-2.5-flash", displayName: "Gemini 2.5 Flash"),
         LLMModel(id: "meta-llama/llama-3.3-70b-instruct", displayName: "Llama 3.3 70B"),
     ]
 
