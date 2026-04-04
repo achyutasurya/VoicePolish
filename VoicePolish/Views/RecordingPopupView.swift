@@ -24,7 +24,7 @@ final class RecordingPopupController {
         previousApp = NSWorkspace.shared.frontmostApplication
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 390, height: 220),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 220),
             styleMask: [.titled, .closable, .nonactivatingPanel, .hudWindow],
             backing: .buffered,
             defer: false
@@ -97,7 +97,7 @@ struct RecordingPopupView: View {
             controlsView
         }
         .padding(20)
-        .frame(width: 360)
+        .frame(width: 410)
         .onChange(of: appState.shouldStopAndSend) { _, newValue in
             if newValue {
                 appState.shouldStopAndSend = false
@@ -229,13 +229,13 @@ struct RecordingPopupView: View {
                 .tint(.red)
 
                 Button(action: { Task { await stopAndSend() } }) {
-                    Label("Stop & Send", systemImage: "arrow.up.circle.fill")
+                    Label("Stop & Paste", systemImage: "arrow.up.circle.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.blue)
 
                 Button(action: { Task { await stopAndCitrixSend() } }) {
-                    Label("Citrix Send", systemImage: "keyboard")
+                    Label("Stop & Type", systemImage: "keyboard")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.orange)
@@ -252,13 +252,13 @@ struct RecordingPopupView: View {
                 .tint(.red)
 
                 Button(action: { Task { await stopAndSend() } }) {
-                    Label("Stop & Send", systemImage: "arrow.up.circle.fill")
+                    Label("Stop & Paste", systemImage: "arrow.up.circle.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.blue)
 
                 Button(action: { Task { await stopAndCitrixSend() } }) {
-                    Label("Citrix Send", systemImage: "keyboard")
+                    Label("Stop & Type", systemImage: "keyboard")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.orange)
