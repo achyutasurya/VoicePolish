@@ -49,8 +49,29 @@ actor DeepgramService {
 
     // MARK: - Transcribe Audio
 
-    func transcribeAudio(wavData: Data, apiKey: String, model: String) async throws -> String {
-        let urlString = "\(baseURL)/listen?model=\(model)&smart_format=true"
+    func transcribeAudio(wavData: Data, apiKey: String, model: String,
+                         keyterms: [String] = [],
+                         vocabularyEnabled: Bool = false) async throws -> String {
+        var urlString = "\(baseURL)/listen?model=\(model)&smart_format=true"
+
+        if vocabularyEnabled && !keyterms.isEmpty {
+            // Character set for encoding query parameter VALUES (not full query strings).
+            // .urlQueryAllowed leaves :+&= unencoded since they're structural in URLs,
+            // but they must be encoded inside values to avoid corrupting the URL.
+            var paramValueAllowed = CharacterSet.urlQueryAllowed
+            paramValueAllowed.remove(charactersIn: ":+&=")
+
+            // Append keyterms or keywords based on model
+            let usesKeyterm = model.hasPrefix("nova-3") // nova-3, nova-3-general, nova-3-flux
+            for term in keyterms where !term.isEmpty {
+                let encoded = term.addingPercentEncoding(withAllowedCharacters: paramValueAllowed) ?? term
+                if usesKeyterm {
+                    urlString += "&keyterm=\(encoded)"
+                } else {
+                    urlString += "&keywords=\(encoded)"
+                }
+            }
+        }
         guard let url = URL(string: urlString) else {
             throw DeepgramError.invalidURL
         }
@@ -62,7 +83,7 @@ actor DeepgramService {
         request.httpBody = wavData
         request.timeoutInterval = 30
 
-        logger.info("Sending audio to Deepgram. Model: \(model), Size: \(wavData.count) bytes")
+        logger.info("Sending audio to Deepgram. Model: \(model), Size: \(wavData.count) bytes, URL: \(urlString)")
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
@@ -82,7 +103,9 @@ actor DeepgramService {
 
             // Retry the request recursively (max 1 retry to avoid infinite loops)
             do {
-                return try await transcribeAudio(wavData: wavData, apiKey: apiKey, model: model)
+                return try await transcribeAudio(wavData: wavData, apiKey: apiKey, model: model,
+                                                   keyterms: keyterms,
+                                                   vocabularyEnabled: vocabularyEnabled)
             } catch DeepgramError.apiError(let code, _) where code == 429 {
                 // Rate limited again, give up
                 throw DeepgramError.apiError(statusCode: 429, message: "Rate limited: too many requests")

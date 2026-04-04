@@ -32,6 +32,16 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.6] — 2026-04-03
+
+### Added
+- **Custom Vocabulary**: New settings section for Deepgram custom vocabulary with enable/disable toggle
+  - Keyterm prompting for Nova-3/Flux models — boost recognition of domain-specific words (e.g., Tavily, MCP, Context7)
+  - Keywords boosting for Nova-2/Enhanced/Base models — auto-detected based on selected model
+  - Add/remove terms with inline UI, persisted across app restarts (JSON-encoded in UserDefaults)
+  - Toggle to enable/disable — when off, no vocabulary params sent to Deepgram
+  - Safe URL encoding for query parameter values (encodes `:`, `+`, `&`, `=` in term values)
+
 ## [0.3.5] — 2026-04-03
 
 ### Added

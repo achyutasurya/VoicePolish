@@ -125,6 +125,24 @@ final class AppSettings {
         set { UserDefaults.standard.set(newValue, forKey: "deepgramModel") }
     }
 
+    var deepgramVocabularyEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "deepgramVocabularyEnabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "deepgramVocabularyEnabled") }
+    }
+
+    var deepgramKeyterms: [String] {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: "deepgramKeyterms"),
+                  let terms = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+            return terms
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(data, forKey: "deepgramKeyterms")
+            }
+        }
+    }
+
     var openRouterAPIKey: String {
         get { UserDefaults.standard.string(forKey: "openRouterAPIKey") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "openRouterAPIKey") }

@@ -398,7 +398,9 @@ struct RecordingPopupView: View {
             transcript = try await appState.deepgramService.transcribeAudio(
                 wavData: wavData,
                 apiKey: appState.settings.deepgramAPIKey,
-                model: appState.settings.deepgramModel
+                model: appState.settings.deepgramModel,
+                keyterms: appState.settings.deepgramKeyterms,
+                vocabularyEnabled: appState.settings.deepgramVocabularyEnabled
             )
             logger.info("\(logPrefix): transcript received (\(transcript.count) chars): \(transcript)")
         } catch {

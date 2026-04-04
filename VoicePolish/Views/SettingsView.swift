@@ -122,6 +122,88 @@ struct LLMModelPickerView: View {
     }
 }
 
+struct CustomVocabularyView: View {
+    @Bindable var appState: AppState
+
+    @State private var enabled = false
+    @State private var keyterms: [String] = []
+    @State private var newKeyterm = ""
+
+    private var usesKeyterm: Bool {
+        appState.settings.deepgramModel.hasPrefix("nova-3")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Custom Vocabulary", isOn: $enabled)
+                .font(.subheadline.bold())
+                .onChange(of: enabled) { _, newValue in
+                    appState.settings.deepgramVocabularyEnabled = newValue
+                }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(usesKeyterm ? "Keyterms (boost recognition)" : "Keywords (boost recognition)")
+                    .font(.caption.bold())
+                    .foregroundColor(.secondary)
+
+                HStack {
+                    TextField("e.g. Tavily, MCP...", text: $newKeyterm)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { addKeyterm() }
+                    Button("Add") { addKeyterm() }
+                        .disabled(newKeyterm.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+
+                if !keyterms.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(keyterms, id: \.self) { term in
+                            HStack {
+                                Text(term)
+                                    .font(.caption)
+                                Spacer()
+                                Button {
+                                    removeKeyterm(term)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(.secondary)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.gray.opacity(0.08))
+                            .cornerRadius(4)
+                        }
+                    }
+                }
+
+                Text(usesKeyterm ? "Up to ~50 terms. Using keyterm (Nova-3)" : "Up to 100 terms. Using keywords (\(appState.settings.deepgramModel))")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .disabled(!enabled)
+            .opacity(enabled ? 1 : 0.5)
+        }
+        .onAppear {
+            enabled = appState.settings.deepgramVocabularyEnabled
+            keyterms = appState.settings.deepgramKeyterms
+        }
+    }
+
+    private func addKeyterm() {
+        let term = newKeyterm.trimmingCharacters(in: .whitespaces)
+        guard !term.isEmpty, !keyterms.contains(term) else { return }
+        keyterms.append(term)
+        appState.settings.deepgramKeyterms = keyterms
+        newKeyterm = ""
+    }
+
+    private func removeKeyterm(_ term: String) {
+        keyterms.removeAll { $0 == term }
+        appState.settings.deepgramKeyterms = keyterms
+    }
+}
+
 struct CitrixTypingPresetPickerView: View {
     @Bindable var appState: AppState
 
@@ -282,6 +364,9 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                 }
+
+                // MARK: - Custom Vocabulary
+                CustomVocabularyView(appState: appState)
 
                 Divider()
 

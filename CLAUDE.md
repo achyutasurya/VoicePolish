@@ -129,6 +129,10 @@ After updating, rebuild and deploy to /Applications (see Build & Run above).
 
 Logs written to `~/Library/Logs/VoicePolish/voicepolish-YYYY-MM-DD.log` and OSLog subsystem `com.voicepolish.app`. Check logs for debugging pipeline issues (API responses, focus transfer, clipboard operations).
 
+## Commit Messages
+
+**Never include Claude/AI attribution in commit messages.** No `Co-Authored-By: Claude`, no `Co-Authored-By: ... <noreply@anthropic.com>`, no mentions of "Claude Code", "Anthropic", or any AI tool in commit messages. Write clean, descriptive commit messages that focus solely on what changed and why.
+
 ## Attribution Notes
 
 ### Commits NOT to be attributed to Claude Code
