@@ -143,8 +143,18 @@ actor DeepgramService {
 
         let decoded = try JSONDecoder().decode(DeepgramResponse.self, from: data)
 
-        guard let transcript = decoded.results?.channels.first?.alternatives.first?.transcript,
-              !transcript.isEmpty else {
+        // Observability: log every Deepgram response (success or empty) with the fields
+        // that let us distinguish silent-mic from clip-too-short from Deepgram glitch.
+        // Added in v0.3.8 to unblock threshold tuning for later commits. See plan file
+        // abstract-rolling-babbage.md Commit 1.
+        let metaDuration = decoded.metadata?.duration ?? 0
+        let metaRequestId = decoded.metadata?.requestId ?? "-"
+        let firstAlt = decoded.results?.channels.first?.alternatives.first
+        let altConfidence = firstAlt?.confidence ?? 0
+        let altWordCount = firstAlt?.words?.count ?? 0
+        logger.info("[Deepgram] request_id=\(metaRequestId) duration=\(String(format: "%.2f", metaDuration)) confidence=\(String(format: "%.3f", altConfidence)) wordCount=\(altWordCount)")
+
+        guard let transcript = firstAlt?.transcript, !transcript.isEmpty else {
             throw DeepgramError.emptyTranscript
         }
 
@@ -155,7 +165,18 @@ actor DeepgramService {
     // MARK: - Response Types
 
     struct DeepgramResponse: Codable {
+        let metadata: Metadata?
         let results: Results?
+
+        struct Metadata: Codable {
+            let duration: Double
+            let requestId: String?
+
+            enum CodingKeys: String, CodingKey {
+                case duration
+                case requestId = "request_id"
+            }
+        }
 
         struct Results: Codable {
             let channels: [Channel]
@@ -167,6 +188,14 @@ actor DeepgramService {
 
         struct Alternative: Codable {
             let transcript: String
+            let confidence: Double
+            let words: [Word]?
+        }
+
+        struct Word: Codable {
+            let word: String
+            let start: Double
+            let end: Double
             let confidence: Double
         }
     }

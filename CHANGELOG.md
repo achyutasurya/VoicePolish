@@ -32,6 +32,11 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.8] — 2026-04-11
+
+### Added
+- **Deepgram response instrumentation** (observability-only, zero behavioral change). The `DeepgramResponse` struct now decodes `metadata.duration`, `metadata.request_id`, and `alternatives[0].words[]`. Every `/v1/listen` call logs a `[Deepgram] request_id=... duration=... confidence=... wordCount=...` line so silent-mic, too-short-clip, and real Deepgram glitches can be distinguished in a week's worth of production logs. First commit in the SaaS-reliability pass — unblocks threshold tuning for later commits.
+
 ## [0.3.7] — 2026-04-11
 
 ### Fixed
