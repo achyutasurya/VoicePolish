@@ -32,6 +32,12 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.11] — 2026-04-11
+
+### Fixed
+- **CoreAudio HAL preflight before engine creation.** Added `waitForDefaultInputDeviceReady(timeout: 1.5)` which polls `kAudioHardwarePropertyDefaultInputDevice` + `kAudioDevicePropertyDeviceIsAlive` + `kAudioDevicePropertyStreamConfiguration` every 75 ms. Closes the `kAudioHardwareBadDeviceError` (560227702 = `!dev`) race where the default input device ID becomes stale during a device swap but CoreAudio hasn't finished reconfiguring the graph. Follows SimplyCoreAudio's and SFBAudioEngine's canonical pattern.
+- **Transient error classification in `warmUp()`.** Known transient HAL codes (`kAudioHardwareBadDeviceError`, `kAudioHardwareNotRunningError`, `kAudioHardwareIllegalOperationError`) now route to `.stopped` for retry instead of terminal `.broken`. Same for stale-format and no-buffers errors from v0.3.10. This sets up commit v0.3.12's backoff ladder — transient errors will walk the ladder; only genuinely unknown failures enter `.broken`.
+
 ## [0.3.10] — 2026-04-11
 
 ### Fixed

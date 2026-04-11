@@ -157,8 +157,36 @@ final class AudioRecorder {
                 engineState.withLock { $0 = .stopped }
                 logger.info("warmUp() cancelled - State: stopped")
             } else {
-                engineState.withLock { $0 = .broken }
-                logger.error("warmUp() failed - State: broken - Error: \(error.localizedDescription)")
+                // Transient error classification (v0.3.11).
+                // Known transient CoreAudio HAL codes (FourCC in parens):
+                //   560227702  kAudioHardwareBadDeviceError         '!dev'
+                //   1937010544 kAudioHardwareNotRunningError        'stop'
+                //   560161383  kAudioHardwareIllegalOperationError  '!op '
+                // These all surface during device-graph reconfiguration races and
+                // are almost always resolved by the next retry. Plus our own
+                // RecorderError.isTransient cases (deviceNotReady, engineStartTimeout,
+                // Stale format, No audio buffers).
+                //
+                // Transient errors route to .stopped so the backoff ladder in
+                // commit v0.3.12's recoverEngine() can retry them. Only unknown/
+                // terminal errors enter .broken.
+                // Ref: https://www.osstatus.com/search/results?platform=all&framework=all&search=560227702
+                let transientHALCodes: Set<Int> = [
+                    560227702,   // kAudioHardwareBadDeviceError '!dev'
+                    1937010544,  // kAudioHardwareNotRunningError 'stop'
+                    560161383,   // kAudioHardwareIllegalOperationError '!op '
+                ]
+                let nsError = error as NSError
+                let isTransientRecorderError = (error as? RecorderError)?.isTransient == true
+                let isTransientHALCode = transientHALCodes.contains(nsError.code)
+
+                if isTransientRecorderError || isTransientHALCode {
+                    engineState.withLock { $0 = .stopped }
+                    logger.info("warmUp() hit transient condition (code=\(nsError.code)) - State: stopped (retryable via ladder)")
+                } else {
+                    engineState.withLock { $0 = .broken }
+                    logger.error("warmUp() failed - State: broken - Error: \(error.localizedDescription)")
+                }
             }
             throw error
         }
@@ -175,6 +203,21 @@ final class AudioRecorder {
         // post-start withTimeout below. Must reset BEFORE the tap is installed so
         // we don't accidentally observe a stale `true` from the previous engine.
         firstBufferReceived.withLock { $0 = false }
+
+        // CoreAudio HAL preflight (v0.3.11). Before calling AVAudioEngine(), confirm
+        // that the default input device is non-zero, alive, and has at least one
+        // input stream with at least one channel. Closes the kAudioHardwareBadDeviceError
+        // (!dev 560227702) race where the device ID has become stale during a device
+        // swap but CoreAudio hasn't finished reconfiguring. 1.5s budget fits inside
+        // the 10s overall warmup cap from commit 539a750.
+        let preflightStart = CFAbsoluteTimeGetCurrent()
+        guard let readyDeviceID = await waitForDefaultInputDeviceReady(timeout: 1.5) else {
+            let preflightElapsed = (CFAbsoluteTimeGetCurrent() - preflightStart) * 1000
+            logger.error("HAL preflight timed out after \(String(format: "%.0f", preflightElapsed))ms — device not alive or no input streams")
+            throw RecorderError.deviceNotReady("No alive default input device with input streams after 1.5s")
+        }
+        let preflightElapsed = (CFAbsoluteTimeGetCurrent() - preflightStart) * 1000
+        logger.debug("HAL preflight passed in \(String(format: "%.0f", preflightElapsed))ms — device \(readyDeviceID) alive and streaming")
 
         // Log current default input device for diagnostics
         if let deviceInfo = getDefaultInputDeviceName() {
@@ -692,6 +735,95 @@ final class AudioRecorder {
         return min(avg * 5, 1.0)
     }
 
+    // MARK: - CoreAudio HAL readiness (v0.3.11)
+    //
+    // Before calling AVAudioEngine() we poll the HAL for a default input device
+    // that's (a) non-zero, (b) alive, and (c) has at least one input stream with
+    // at least one channel. This closes the `kAudioHardwareBadDeviceError` (!dev
+    // 560227702) race where the default device ID has become stale during a
+    // device swap but CoreAudio hasn't finished reconfiguring the graph.
+    //
+    // Research: SimplyCoreAudio (https://github.com/rnine/SimplyCoreAudio) and
+    // SFBAudioEngine's AudioDevice class implement the canonical version of this
+    // check. osstatus.com confirms 560227702 = kAudioHardwareBadDeviceError.
+    // https://www.osstatus.com/search/results?platform=all&framework=all&search=560227702
+
+    /// Returns the current default input device ID, or nil if none is set.
+    private nonisolated func getDefaultInputDeviceID() -> AudioDeviceID? {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address, 0, nil, &size, &deviceID
+        )
+        guard status == noErr, deviceID != 0 else { return nil }
+        return deviceID
+    }
+
+    /// Queries `kAudioDevicePropertyDeviceIsAlive` on the given device.
+    /// Returns true if the HAL reports the device as alive and usable.
+    private nonisolated func isDeviceAlive(_ deviceID: AudioDeviceID) -> Bool {
+        var isAlive: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsAlive,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &isAlive)
+        return status == noErr && isAlive == 1
+    }
+
+    /// Queries `kAudioDevicePropertyStreamConfiguration` (input scope) on the given device.
+    /// Returns true if the device has at least one input stream with at least one channel.
+    private nonisolated func hasInputStreams(_ deviceID: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        let sizeStatus = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize)
+        guard sizeStatus == noErr, dataSize > 0 else { return false }
+
+        let bufferList = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: Int(dataSize))
+        defer { bufferList.deallocate() }
+
+        let dataStatus = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, bufferList)
+        guard dataStatus == noErr else { return false }
+
+        let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
+        for buffer in buffers where buffer.mNumberChannels > 0 {
+            return true
+        }
+        return false
+    }
+
+    /// Waits for the default input device to be in a valid, alive, streaming state.
+    /// Polls every 75ms up to `timeout` seconds. Returns the valid AudioDeviceID
+    /// or nil on timeout. This runs `nonisolated` / off the MainActor because
+    /// the underlying AudioObjectGetPropertyData calls can block briefly during
+    /// graph reconfiguration — same reasoning as commit 539a750 that moved
+    /// AVAudioEngine() creation off the MainActor.
+    private nonisolated func waitForDefaultInputDeviceReady(timeout: TimeInterval = 1.5) async -> AudioDeviceID? {
+        let pollIntervalNs: UInt64 = 75_000_000 // 75 ms
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let deviceID = getDefaultInputDeviceID(),
+               isDeviceAlive(deviceID),
+               hasInputStreams(deviceID) {
+                return deviceID
+            }
+            try? await Task.sleep(nanoseconds: pollIntervalNs)
+        }
+        return nil
+    }
+
     /// Returns (deviceName, deviceUID) for the current default input device via CoreAudio.
     /// Used for diagnostics — makes it immediately visible in logs when the wrong device is selected.
     private nonisolated func getDefaultInputDeviceName() -> (name: String, uid: String)? {
@@ -740,6 +872,9 @@ final class AudioRecorder {
         case engineStartTimeout
         case engineBroken(String)
         case engineNotReady(String)
+        /// v0.3.11: CoreAudio HAL preflight failed — default input device is not alive
+        /// or has no input streams yet. Transient; should be retried via backoff ladder.
+        case deviceNotReady(String)
 
         var errorDescription: String? {
             switch self {
@@ -753,6 +888,24 @@ final class AudioRecorder {
                 return "Audio engine error: \(reason)"
             case .engineNotReady(let reason):
                 return "Audio engine not ready: \(reason)"
+            case .deviceNotReady(let reason):
+                return "Default input device not ready: \(reason)"
+            }
+        }
+
+        /// True for errors that should route into the recovery backoff ladder instead
+        /// of transitioning the engine state to `.broken`. Added in v0.3.11 to stop
+        /// mis-classifying transient CoreAudio HAL races as terminal failures.
+        var isTransient: Bool {
+            switch self {
+            case .deviceNotReady, .engineStartTimeout:
+                return true
+            case .engineBroken(let reason):
+                // "Stale format during warmup" from v0.3.10 is also transient — the graph
+                // was mid-reconfig when we queried it. Retry via the ladder.
+                return reason.contains("Stale format") || reason.contains("No audio buffers")
+            default:
+                return false
             }
         }
     }
