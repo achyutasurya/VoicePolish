@@ -65,6 +65,14 @@ final class AudioRecorder {
     /// Buffer flow timestamp for health verification — protected by atomic lock
     private let lastBufferTimestamp = OSAllocatedUnfairLock<Date?>(initialState: nil)
 
+    /// First-buffer arrival flag, set from inside the tap callback on first invocation.
+    /// Added in v0.3.10 to close a race in the old buffer-polling loop: the poll loop
+    /// sampled `lastBufferTimestamp` from outside the tap thread, creating a window
+    /// where the poll woke up before the buffer was actually written. Setting a flag
+    /// from within the tap block and waiting on it via `withTimeout` is race-free.
+    /// Reset to false at the start of every `performWarmup()`.
+    private let firstBufferReceived = OSAllocatedUnfairLock(initialState: false)
+
     /// Atomic flag checked from the audio render thread.
     /// When true, the tap callback writes buffers to the file writer.
     /// When false, buffers are silently discarded.
@@ -162,6 +170,12 @@ final class AudioRecorder {
         logger.info("performWarmup() starting...")
         let setupStart = CFAbsoluteTimeGetCurrent()
 
+        // Reset first-buffer flag for this warmup pass (v0.3.10). This flag is set
+        // from inside the tap callback on first invocation and waited on by the
+        // post-start withTimeout below. Must reset BEFORE the tap is installed so
+        // we don't accidentally observe a stale `true` from the previous engine.
+        firstBufferReceived.withLock { $0 = false }
+
         // Log current default input device for diagnostics
         if let deviceInfo = getDefaultInputDeviceName() {
             logger.info("Audio input device: \"\(deviceInfo.name)\" (UID: \(deviceInfo.uid))")
@@ -175,13 +189,42 @@ final class AudioRecorder {
         // AVAudioEngine(), inputNode, and outputFormat() are synchronous CoreAudio calls
         // that can hang for minutes during audio device graph reconfiguration.
         // Running them off-MainActor allows the 10-second warmup timeout to actually fire.
+        //
+        // v0.3.10: Format reconciliation (WhisperKit pattern).
+        // `outputFormat(forBus: 0)` can briefly return 0 ch / 0 Hz or the previous
+        // device's format immediately after an AVAudioEngineConfigurationChange.
+        // Installing a tap with that stale format causes engine.start() to succeed
+        // but no buffers ever flow. `inputFormat(forBus: 0)` reflects the actual
+        // hardware sample rate, which is always current. Take the hardware sample
+        // rate and the rest of the fields from outputFormat to construct a fresh,
+        // consistent AVAudioFormat for the tap.
+        // Ref: WhisperKit AudioProcessor.swift ~L974
+        //      https://github.com/argmaxinc/WhisperKit/blob/main/Sources/WhisperKit/Core/Audio/AudioProcessor.swift
+        //      https://www.mail-archive.com/coreaudio-api@lists.apple.com/msg01754.html
         logger.debug("Creating AVAudioEngine instance (off MainActor to prevent UI freeze)")
         let engineCreateStart = CFAbsoluteTimeGetCurrent()
-        let setup = await Task.detached {
+        let setup = try await Task.detached { () throws -> EngineSetup in
             let engine = AVAudioEngine()
             let inputNode = engine.inputNode
-            let format = inputNode.outputFormat(forBus: 0)
-            return EngineSetup(engine: engine, inputNode: inputNode, format: format)
+            let outputFormat = inputNode.outputFormat(forBus: 0)
+            let hardwareSampleRate = inputNode.inputFormat(forBus: 0).sampleRate
+
+            // Validate the hardware side of the query. If either is zero here, the
+            // graph is in a transitional state and installTap would fail silently.
+            guard hardwareSampleRate > 0, outputFormat.channelCount > 0 else {
+                throw RecorderError.engineBroken("Stale format during warmup: hardwareSampleRate=\(hardwareSampleRate), outputChannels=\(outputFormat.channelCount)")
+            }
+
+            guard let reconciledFormat = AVAudioFormat(
+                commonFormat: outputFormat.commonFormat,
+                sampleRate: hardwareSampleRate,
+                channels: outputFormat.channelCount,
+                interleaved: outputFormat.isInterleaved
+            ) else {
+                throw RecorderError.formatCreationFailed
+            }
+
+            return EngineSetup(engine: engine, inputNode: inputNode, format: reconciledFormat)
         }.value
         let engineCreateElapsed = (CFAbsoluteTimeGetCurrent() - engineCreateStart) * 1000
         logger.debug("AVAudioEngine created in \(String(format: "%.1f", engineCreateElapsed))ms")
@@ -217,7 +260,7 @@ final class AudioRecorder {
 
         // Install a PERMANENT tap — never removed between recordings.
         // The isCapturing flag controls whether buffers are written or discarded.
-        logger.debug("Installing audio tap on input node")
+        logger.debug("Installing audio tap on input node with reconciled format")
         var bufferCount = 0
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self else { return }
@@ -227,6 +270,12 @@ final class AudioRecorder {
             if bufferCount <= 3 {
                 self.logger.info("Tap callback received buffer \(bufferCount): frameLength=\(buffer.frameLength), format=\(buffer.format)")
             }
+
+            // Signal first-buffer arrival for the warmup withTimeout wait (v0.3.10).
+            // Must happen BEFORE the isCapturing check so warmup can confirm the
+            // tap is actually firing, not just that engine.start() returned.
+            // Commit a7199b1 (0.3.3) established the same rule for lastBufferTimestamp.
+            self.firstBufferReceived.withLock { if !$0 { $0 = true } }
 
             // Update buffer timestamp for health checks (always, not just during recording)
             self.lastBufferTimestamp.withLock { $0 = Date() }
@@ -266,26 +315,43 @@ final class AudioRecorder {
         // not stale timestamps from a previous engine instance.
         lastBufferTimestamp.withLock { $0 = nil }
 
-        // Poll for first buffer — check every 50ms, up to 2 seconds total.
-        // Replaces fixed 250ms sleep that was too aggressive (buffers sometimes arrive at ~264ms).
-        // On healthy systems this completes in ~100-150ms. On slow systems, waits up to 2s.
-        logger.debug("Polling for first audio buffer (up to 2s, checking every 50ms)...")
-        let maxWait: TimeInterval = 2.0
-        let pollInterval: UInt64 = 50_000_000 // 50ms
-        let pollStart = CFAbsoluteTimeGetCurrent()
-
-        while CFAbsoluteTimeGetCurrent() - pollStart < maxWait {
-            try Task.checkCancellation()
-            let hasBuffer = lastBufferTimestamp.withLock { $0 } != nil
-            if hasBuffer {
-                let waitElapsed = (CFAbsoluteTimeGetCurrent() - pollStart) * 1000
-                logger.debug("First buffer received after \(String(format: "%.1f", waitElapsed))ms of polling")
-                break
+        // Wait for first buffer to actually arrive at the tap (v0.3.10).
+        // The `firstBufferReceived` flag is set from INSIDE the tap callback (see
+        // installTap block above), which is race-free vs. the old polling loop
+        // that sampled lastBufferTimestamp from outside the tap thread.
+        //
+        // Timeout bumped from 2s to 3s to accommodate post-device-swap settling:
+        // Apple Developer Forum thread 683348 documents 500ms+ settle times after
+        // AVAudioEngineConfigurationChange. Healthy graph still returns in ~100-150ms.
+        // Total warmup still bounded by the 10s overall cap in warmUp().
+        //
+        // Uses withThrowingTaskGroup inline (same pattern as the 10s overall timeout
+        // in warmUp()) because the existing withTimeout() helper only takes a sync
+        // closure and this wait needs Task.sleep inside.
+        logger.debug("Waiting for first audio buffer (up to 3s)...")
+        let firstBufferStart = CFAbsoluteTimeGetCurrent()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                guard let self else { return }
+                while !self.firstBufferReceived.withLock({ $0 }) {
+                    try Task.checkCancellation()
+                    try await Task.sleep(nanoseconds: 25_000_000) // 25ms
+                }
             }
-            try await Task.sleep(nanoseconds: pollInterval)
+            group.addTask {
+                try await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+                throw RecorderError.engineBroken("No audio buffers received during warmup (3s timeout)")
+            }
+            // Wait for whichever task finishes first (flag set → success, or timeout → throw)
+            guard let _ = try await group.next() else {
+                throw RecorderError.engineBroken("First-buffer wait group returned no result")
+            }
+            group.cancelAll()
         }
+        let firstBufferElapsed = (CFAbsoluteTimeGetCurrent() - firstBufferStart) * 1000
+        logger.debug("First buffer received after \(String(format: "%.1f", firstBufferElapsed))ms")
 
-        logger.debug("Buffer polling complete, verifying engine health...")
+        logger.debug("First-buffer wait complete, verifying engine health...")
         try verifyEngineHealth()
         logger.debug("Engine health verified successfully")
 

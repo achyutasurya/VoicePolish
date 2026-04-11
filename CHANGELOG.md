@@ -32,6 +32,12 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.10] — 2026-04-11
+
+### Fixed
+- **AVAudioEngine stale-format race — the biggest reliability fix.** After an `AVAudioEngineConfigurationChange` (Bluetooth reconnect, USB dock switch, headphone plug/unplug), `inputNode.outputFormat(forBus: 0)` briefly returns the previous device's format (sometimes `0 ch / 0 Hz`). Installing a tap with that stale format caused `engine.start()` to succeed *without throwing* but no audio buffer callbacks ever fired — the "No audio buffers received during warmup" error. Adopted the WhisperKit canonical pattern (`AudioProcessor.swift` ~L974): take `sampleRate` from `inputNode.inputFormat(forBus: 0)` (which always reflects real hardware) and the rest of the fields from `outputFormat(forBus: 0)`, then construct a fresh `AVAudioFormat` and install that on the tap. Validates non-zero values before install.
+- **First-buffer detection moved inside the tap callback.** The old 50 ms polling loop sampled `lastBufferTimestamp` from outside the tap thread, creating a subtle race. The new `firstBufferReceived` flag is set from within the tap block on first invocation and waited on via `withThrowingTaskGroup`. Wait window bumped from 2 s to 3 s (Apple Developer Forum thread 683348 documents 500 ms+ settle times post-device-swap). Healthy graph still returns in ~100-150 ms.
+
 ## [0.3.9] — 2026-04-11
 
 ### Fixed
