@@ -85,44 +85,62 @@ actor DeepgramService {
 
         logger.info("Sending audio to Deepgram. Model: \(model), Size: \(wavData.count) bytes, URL: \(urlString)")
 
-        let startTime = CFAbsoluteTimeGetCurrent()
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let duration = CFAbsoluteTimeGetCurrent() - startTime
+        // Iterative retry with exponential backoff + jitter (v0.3.9).
+        // Replaces the recursive 429 retry added in commit 8fbcc0d — that version
+        // had no attempt cap, no exponential growth, and no jitter, which is exactly
+        // the thundering-herd anti-pattern Deepgram's back-off article warns against.
+        // Allowlist matches Deepgram's Python SDK default; max 3 retries (4 total requests).
+        // Ref: https://deepgram.com/learn/api-back-off-strategies
+        let retryableStatusCodes: Set<Int> = [408, 429, 500, 502, 503, 504]
+        let maxRetries = 3
 
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw DeepgramError.invalidResponse
+        var data = Data()
+        var httpResponse: HTTPURLResponse?
+        var rtt: TimeInterval = 0
+
+        for attempt in 0...maxRetries {
+            let startTime = CFAbsoluteTimeGetCurrent()
+            let (responseData, urlResponse) = try await URLSession.shared.data(for: request)
+            rtt = CFAbsoluteTimeGetCurrent() - startTime
+
+            guard let resp = urlResponse as? HTTPURLResponse else {
+                throw DeepgramError.invalidResponse
+            }
+
+            data = responseData
+            httpResponse = resp
+
+            logger.apiCall(
+                service: "Deepgram",
+                endpoint: urlString,
+                method: "POST",
+                requestSize: wavData.count,
+                statusCode: resp.statusCode,
+                responseSize: responseData.count,
+                duration: rtt,
+                headers: resp.allHeaderFields
+            )
+
+            // Retry only on allowlisted transient status codes AND only if we have attempts left.
+            // 4xx-other (400/401/403/404) are permanent — never retry those.
+            if retryableStatusCodes.contains(resp.statusCode) && attempt < maxRetries {
+                // Honor Retry-After header (Deepgram sends it on 429 and may send on 5xx).
+                // If absent, fall back to exponential backoff + jitter, capped at 32s.
+                let retryAfterHeader = Double(resp.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 0
+                let exponentialBase = pow(2.0, Double(attempt))  // 1s, 2s, 4s
+                let jitter = Double.random(in: 0...1.0)
+                let delay = min(max(retryAfterHeader, exponentialBase + jitter), 32.0)
+                logger.info("[Deepgram] HTTP \(resp.statusCode), retrying in \(String(format: "%.2f", delay))s (attempt \(attempt + 1)/\(maxRetries))")
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                continue
+            }
+
+            // Success or non-retryable failure — exit the retry loop
+            break
         }
 
-        let responseHeaders = httpResponse.allHeaderFields
-
-        logger.apiCall(
-            service: "Deepgram",
-            endpoint: urlString,
-            method: "POST",
-            requestSize: wavData.count,
-            statusCode: httpResponse.statusCode,
-            responseSize: data.count,
-            duration: duration,
-            headers: responseHeaders
-        )
-
-        // Handle rate limiting with automatic retry
-        if httpResponse.statusCode == 429 {
-            let retryAfter = httpResponse.value(forHTTPHeaderField: "Retry-After") ?? "1"
-            let waitSeconds = Double(retryAfter) ?? 1.0
-            logger.info("Deepgram rate limited. Retrying after \(String(format: "%.1f", waitSeconds))s")
-
-            try await Task.sleep(nanoseconds: UInt64(waitSeconds * 1_000_000_000))
-
-            // Retry the request recursively (max 1 retry to avoid infinite loops)
-            do {
-                return try await transcribeAudio(wavData: wavData, apiKey: apiKey, model: model,
-                                                   keyterms: keyterms,
-                                                   vocabularyEnabled: vocabularyEnabled)
-            } catch DeepgramError.apiError(let code, _) where code == 429 {
-                // Rate limited again, give up
-                throw DeepgramError.apiError(statusCode: 429, message: "Rate limited: too many requests")
-            }
+        guard let httpResponse else {
+            throw DeepgramError.invalidResponse
         }
 
         guard httpResponse.statusCode == 200 else {
@@ -134,8 +152,8 @@ actor DeepgramService {
                 requestSize: wavData.count,
                 statusCode: httpResponse.statusCode,
                 responseSize: data.count,
-                duration: duration,
-                headers: responseHeaders,
+                duration: rtt,
+                headers: httpResponse.allHeaderFields,
                 error: errorBody
             )
             throw DeepgramError.apiError(statusCode: httpResponse.statusCode, message: errorBody)

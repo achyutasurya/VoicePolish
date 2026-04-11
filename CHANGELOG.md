@@ -32,6 +32,11 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.9] — 2026-04-11
+
+### Fixed
+- **Deepgram retry logic rewritten as iterative exponential backoff with jitter.** The old recursive 429 retry path from `8fbcc0d` had no attempt cap, no exponential growth, and no jitter — a sustained rate-limit streak could spin the app and contribute to a thundering-herd incident. Replaced with an iterative loop over `{408, 429, 500, 502, 503, 504}`, max 3 retries (4 total requests), delay = `min(max(Retry-After, 2^attempt + random(0..1)), 32s)`, honoring `Retry-After` on all retryable codes. Never retries on 400/401/403/404.
+
 ## [0.3.8] — 2026-04-11
 
 ### Added
