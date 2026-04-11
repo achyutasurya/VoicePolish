@@ -101,21 +101,36 @@ struct ErrorsView: View {
 
             // Pagination
             if totalPages > 1 {
-                HStack {
+                HStack(spacing: 12) {
                     Spacer()
-                    ForEach(1...totalPages, id: \.self) { page in
-                        Button("\(page)") {
-                            currentPage = page
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(page == currentPage ? .blue : .secondary)
-                        .font(.caption)
+
+                    Button {
+                        currentPage = max(1, currentPage - 1)
+                    } label: {
+                        Image(systemName: "chevron.left")
                     }
+                    .buttonStyle(.bordered)
+                    .disabled(currentPage <= 1)
+
+                    Text("Page \(currentPage) of \(totalPages)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(minWidth: 100)
+
+                    Button {
+                        currentPage = min(totalPages, currentPage + 1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(currentPage >= totalPages)
+
                     Spacer()
                 }
             }
         }
         .padding()
+        .frame(maxWidth: 520)
     }
 }
 

@@ -325,6 +325,7 @@ struct SettingsView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
             .background(selectedTab == tab ? Color.accentColor.opacity(0.15) : Color.clear)
             .foregroundColor(selectedTab == tab ? .accentColor : .secondary)
             .cornerRadius(6)

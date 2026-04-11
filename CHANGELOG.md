@@ -32,6 +32,13 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.7] — 2026-04-11
+
+### Fixed
+- **Tab buttons in the menubar popover** — Settings / History / Errors tabs now respond to clicks anywhere inside the tab frame, not just on the icon or text. Added `.contentShape(Rectangle())` to the tab button label so the whole region is hit-testable.
+- **History view layout breakage with many pages** — Replaced the numbered page-button pagination with a compact `< Page X of Y >` control in both History and Errors tabs. The old row of page-number buttons grew wider than the 520px window when there were many pages (e.g., filtering 559 entries to "Last 7 Days"), pushing entry cards off-screen to the left.
+- Added a defensive `.frame(maxWidth: 520)` clamp to both `HistoryView` and `ErrorsView` to prevent any future child content from blowing out the popover width.
+
 ## [0.3.6] — 2026-04-03
 
 ### Added
