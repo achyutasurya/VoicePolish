@@ -32,6 +32,13 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.12] — 2026-04-11
+
+### Fixed
+- **Exponential backoff recovery ladder.** Replaced the one-shot `recoverEngine()` from `8fbcc0d` with a bounded 5-attempt ladder `[0, 250ms, 500ms, 1s, 2s, 5s]`. Total budget ~8.75s. Each attempt does a full WhisperKit-style teardown (`removeTap` → `disconnectNodeInput` → `stop` → `reset` → nil the engine) before re-warming, guaranteeing a clean graph every retry. `recoveryAttempt` counter is reset to 0 from inside the tap callback on first real buffer — the only rock-solid signal that recovery actually worked (not `engine.start()` returning, which v0.3.10 showed is insufficient).
+- **`AVAudioEngineConfigurationChange` debounce 500 ms → 750 ms.** Community sources (`audiodog.co.uk`, Apple Developer Forums, Liscio's AirPods blog) confirm Bluetooth reconnects and USB-dock switches fire 2-4 notifications 500-1500 ms apart; 500 ms was catching mid-burst and triggering rebuilds against intermediate states.
+- **"Audio engine broken" severity Critical → Warning.** With the backoff ladder in place, this event almost always auto-recovers within 8.75s. CRITICAL is now reserved for the `Engine recovery failed` path where the ladder actually exhausts.
+
 ## [0.3.11] — 2026-04-11
 
 ### Fixed

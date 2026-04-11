@@ -129,9 +129,17 @@ final class AppState {
             do {
                 try audioRecorder.startRecording()
             } catch AudioRecorder.RecorderError.engineBroken(let reason) {
-                // Engine is broken — show popup and attempt recovery
-                logger.error("Engine is broken (\(reason)), attempting recovery")
-                errorService.addError(source: .audioRecorder, severity: .critical, message: "Audio engine broken", details: reason)
+                // Engine is broken — show popup and attempt recovery via the backoff ladder.
+                //
+                // v0.3.12 severity re-classification: this is now .warning, not .critical.
+                // With the backoff ladder in AudioRecorder.recoverEngine(), the ladder
+                // almost always recovers within 8.75s. CRITICAL is reserved for
+                // "user is blocked and must take action", which this event no longer is.
+                // The catch block below (Engine recovery failed) is where the error
+                // becomes genuinely user-facing — that stays at .error severity because
+                // the ladder exhausted.
+                logger.info("Engine is broken (\(reason)), attempting recovery via backoff ladder")
+                errorService.addError(source: .audioRecorder, severity: .warning, message: "Audio engine broken", details: reason)
                 controller.showPopup(appState: self)
                 Task { @MainActor in
                     do {

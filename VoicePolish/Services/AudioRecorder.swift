@@ -91,6 +91,27 @@ final class AudioRecorder {
     /// Task tracking device change debounce — cancelled if another change occurs
     private var deviceChangeTask: Task<Void, Never>?
 
+    // MARK: - Recovery ladder state (v0.3.12)
+    //
+    // Replaces the one-shot recovery from commit 8fbcc0d with a bounded exponential
+    // backoff ladder. Designed to handle repeated transient failures (device swap
+    // bursts, HAL reconfiguration races) without tripping .broken on the first miss.
+    // Counter is reset to 0 from inside the tap callback when firstBufferReceived
+    // flips true — that's the only rock-solid signal that recovery actually worked.
+    // Start success of engine.start() is NOT a sufficient signal (see commit v0.3.10).
+    private var recoveryAttempt: Int = 0
+    private let maxRecoveryAttempts = 5
+    /// Backoff delays in nanoseconds, indexed by attempt number.
+    /// Total budget across 5 attempts = ~8.75s.
+    private let backoffLadder: [UInt64] = [
+        0,              // attempt 0: immediate retry
+        250_000_000,    // attempt 1: 250ms
+        500_000_000,    // attempt 2: 500ms
+        1_000_000_000,  // attempt 3: 1s
+        2_000_000_000,  // attempt 4: 2s
+        5_000_000_000,  // attempt 5: 5s
+    ]
+
     private let logger = LoggingService.shared
 
     // MARK: - Engine Lifecycle
@@ -318,7 +339,24 @@ final class AudioRecorder {
             // Must happen BEFORE the isCapturing check so warmup can confirm the
             // tap is actually firing, not just that engine.start() returned.
             // Commit a7199b1 (0.3.3) established the same rule for lastBufferTimestamp.
-            self.firstBufferReceived.withLock { if !$0 { $0 = true } }
+            //
+            // v0.3.12: Also reset the recoveryAttempt counter the first time the
+            // tap fires in a new engine. This is THE signal that recovery worked
+            // end-to-end; resetting on engine.start() returning is insufficient
+            // because start() can succeed without buffers flowing (see v0.3.10).
+            let wasFirst = self.firstBufferReceived.withLock { flag -> Bool in
+                if !flag { flag = true; return true }
+                return false
+            }
+            if wasFirst {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if self.recoveryAttempt > 0 {
+                        self.logger.info("First buffer received — resetting recoveryAttempt \(self.recoveryAttempt) → 0")
+                    }
+                    self.recoveryAttempt = 0
+                }
+            }
 
             // Update buffer timestamp for health checks (always, not just during recording)
             self.lastBufferTimestamp.withLock { $0 = Date() }
@@ -572,20 +610,17 @@ final class AudioRecorder {
 
     // MARK: - Recovery
 
-    /// Attempts to recover the audio engine from a broken state.
-    /// Performs a hard reset and re-initializes the engine.
-    func recoverEngine() async throws {
-        logger.error("recoverEngine() called - Attempting recovery from broken state")
-
-        // Cancel all ongoing tasks
-        warmupTask?.cancel()
-        deviceChangeTask?.cancel()
-
-        // Hard reset: synchronous state transition
-        engineState.withLock { $0 = .stopped }
+    /// WhisperKit-style full teardown (v0.3.12). Takes the engine all the way
+    /// back to nil so the next warmup builds from a genuinely clean graph.
+    /// Partial reuse across retries is what the stale-format bug from v0.3.10
+    /// cares about — we must not hope the prior state is cleanable.
+    /// Ref: WhisperKit AudioProcessor.swift stopRecording ~L1086
+    ///      https://github.com/argmaxinc/WhisperKit/blob/main/Sources/WhisperKit/Core/Audio/AudioProcessor.swift
+    private func performFullTeardown() {
+        // Stop capturing flag (commit af2f28f) — tap callbacks become no-ops
         isCapturing.withLock { $0 = false }
 
-        // Tear down engine
+        // Remove observers first so they don't fire during teardown
         if let observer = configChangeObserver {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil
@@ -595,21 +630,65 @@ final class AudioRecorder {
             interruptionObserver = nil
         }
 
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine?.stop()
+        // WhisperKit canonical teardown sequence:
+        //   removeTap → disconnectNodeInput → stop → reset → nil
+        if let engine = audioEngine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.disconnectNodeInput(engine.inputNode)
+            engine.stop()
+            engine.reset()
+        }
         audioEngine = nil
         cachedFormat = nil
         lastBufferTimestamp.withLock { $0 = nil }
+        firstBufferReceived.withLock { $0 = false }
+        engineState.withLock { $0 = .stopped }
+    }
 
-        logger.debug("Hard reset complete - waiting for audio hardware to settle")
+    /// Walks the exponential backoff ladder, tearing down and re-warming up the
+    /// engine on each attempt (v0.3.12). Replaces the one-shot recovery from
+    /// commit 8fbcc0d which marked the engine .broken after a single failure.
+    ///
+    /// Attempts 1-5 with delays [0, 250ms, 500ms, 1s, 2s, 5s]. Total budget: ~8.75s.
+    /// Counter is reset to 0 from the tap callback when first buffer arrives
+    /// (the rock-solid signal of successful recovery). If the ladder exhausts,
+    /// state transitions to .broken and the caller sees a permanent error.
+    ///
+    /// Ref plan file ~/.claude/plans/abstract-rolling-babbage.md Commit 5.
+    func recoverEngine() async throws {
+        logger.info("recoverEngine() called - Starting backoff ladder (attempt=\(recoveryAttempt)/\(maxRecoveryAttempts))")
 
-        // Wait for hardware to settle
-        try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+        // Cancel any lingering tasks before starting the ladder
+        warmupTask?.cancel()
+        deviceChangeTask?.cancel()
 
-        // Retry warmup
-        logger.info("Retrying warmup after recovery reset")
-        try await warmUp()
-        logger.info("Engine recovery successful - Engine is running")
+        while recoveryAttempt < maxRecoveryAttempts {
+            let delay = backoffLadder[min(recoveryAttempt, backoffLadder.count - 1)]
+            if delay > 0 {
+                logger.info("Recovery attempt \(recoveryAttempt + 1)/\(maxRecoveryAttempts): waiting \(delay / 1_000_000)ms before retry")
+                try await Task.sleep(nanoseconds: delay)
+            }
+
+            // Full teardown before each attempt — WhisperKit canonical sequence
+            performFullTeardown()
+
+            // Retry warmup. If this succeeds, the tap callback will reset
+            // recoveryAttempt to 0 from inside the tap block.
+            do {
+                try await warmUp()
+                logger.info("Recovery attempt \(recoveryAttempt + 1) succeeded — engine is running")
+                // recoveryAttempt has been (or will be) reset by the tap callback
+                return
+            } catch {
+                logger.error("Recovery attempt \(recoveryAttempt + 1) failed: \(error.localizedDescription)")
+                recoveryAttempt += 1
+            }
+        }
+
+        // Ladder exhausted — engine is permanently broken until manual retry
+        engineState.withLock { $0 = .broken }
+        logger.error("Recovery ladder exhausted after \(maxRecoveryAttempts) attempts — engine permanently broken")
+        throw RecorderError.engineBroken("Recovery ladder exhausted after \(maxRecoveryAttempts) attempts")
     }
 
     // MARK: - Private
@@ -644,11 +723,17 @@ final class AudioRecorder {
         // Cancel existing debounce if any
         deviceChangeTask?.cancel()
 
-        // Debounce: wait 500ms for changes to settle before restarting
-        logger.info("Device change debouncing for 500ms to allow changes to settle")
+        // Debounce: wait 750ms for changes to settle before restarting (v0.3.12).
+        // Commit dc3e8e4 originally set this to 500ms, but community sources
+        // (audiodog.co.uk, Apple Developer Forums, Liscio's AirPods blog) confirm
+        // that Bluetooth reconnects and USB-dock switches fire 2-4 notifications
+        // 500-1500ms apart. 500ms was catching mid-burst and triggering rebuilds
+        // against intermediate states. 750ms coalesces bursts reliably without
+        // adding perceptible recovery lag (250ms difference is imperceptible).
+        logger.info("Device change debouncing for 750ms to allow changes to settle")
         deviceChangeTask = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(nanoseconds: 500_000_000) // 500ms
+                try await Task.sleep(nanoseconds: 750_000_000) // 750ms
                 guard !Task.isCancelled else {
                     self?.logger.info("Device change restart was cancelled")
                     return
