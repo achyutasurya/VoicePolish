@@ -383,6 +383,46 @@ struct RecordingPopupView: View {
         popupState = .transcribing
         _ = appState.audioRecorder.stopRecording()
 
+        // 1a. Client-side silent-mic pre-flight (v0.3.13).
+        // Compute RMS / peak / duration stats from the tap accumulators. If the
+        // recording is too short or too quiet, abort the pipeline BEFORE calling
+        // Deepgram. User directive: no error dialog — just log at .warning severity
+        // and close the popup cleanly. Thresholds from Apple Developer Forum 710820
+        // (speech sits at -40 to -20 dBFS, silence below -60 dBFS) and Forasoft's
+        // silence trimming guide. See plan file abstract-rolling-babbage.md Commit 6.
+        let stats = appState.audioRecorder.getRecordingStats()
+        logger.info("\(logPrefix): recording stats: duration=\(String(format: "%.2f", stats.durationSec))s peak=\(String(format: "%.1f", stats.peakDBFS))dBFS mean=\(String(format: "%.1f", stats.meanDBFS))dBFS")
+
+        // Duration floor: Deepgram returns empty transcripts for clips under ~0.5s.
+        if stats.durationSec < 0.5 {
+            logger.info("\(logPrefix): recording too short (\(String(format: "%.2f", stats.durationSec))s) — log-only, no user dialog")
+            appState.errorService.addError(
+                source: .deepgram,
+                severity: .warning,
+                message: "No speech detected",
+                details: "Recording too short: \(String(format: "%.2f", stats.durationSec))s"
+            )
+            appState.audioRecorder.cancelRecording()
+            onClose()
+            return nil
+        }
+
+        // RMS silence guard: peak < -50 dBFS AND mean < -55 dBFS indicates silent mic.
+        // The AND condition gives near-zero false negatives on real speech: a real
+        // recording with even one brief louder moment will have peak > -50 dBFS.
+        if stats.peakDBFS < -50 && stats.meanDBFS < -55 {
+            logger.info("\(logPrefix): silent recording — log-only, no user dialog")
+            appState.errorService.addError(
+                source: .deepgram,
+                severity: .warning,
+                message: "No speech detected",
+                details: "Silent recording: peak=\(String(format: "%.1f", stats.peakDBFS))dBFS mean=\(String(format: "%.1f", stats.meanDBFS))dBFS duration=\(String(format: "%.1f", stats.durationSec))s"
+            )
+            appState.audioRecorder.cancelRecording()
+            onClose()
+            return nil
+        }
+
         // 2. Get audio data (and clean up temp file)
         let audioStart = CFAbsoluteTimeGetCurrent()
         guard let wavData = appState.audioRecorder.getAudioData() else {
@@ -410,6 +450,33 @@ struct RecordingPopupView: View {
             )
             logger.pipelineStep("Deepgram transcription", duration: CFAbsoluteTimeGetCurrent() - transcribeStart)
             logger.info("\(logPrefix): transcript received (\(transcript.count) chars): \(transcript)")
+        } catch DeepgramService.DeepgramError.noSpeechDetected(let duration) {
+            // v0.3.13: Deepgram confirmed empty transcript for audio >=0.5s.
+            // This is the documented response for silent audio (discussions #765,
+            // #713, #756). NOT a user-facing error per user directive. Log at
+            // .warning severity for observability, close popup cleanly.
+            logger.info("\(logPrefix): Deepgram noSpeechDetected (duration=\(duration)s) — log-only, no user dialog")
+            appState.errorService.addError(
+                source: .deepgram,
+                severity: .warning,
+                message: "No speech detected",
+                details: "Deepgram empty transcript for \(String(format: "%.1f", duration))s audio"
+            )
+            onClose()
+            return nil
+        } catch DeepgramService.DeepgramError.transcriptionFailed(let requestId) {
+            // v0.3.13: 200 OK with duration=0 or other odd state. Real service glitch —
+            // log at .error severity and show a user-facing dialog. request_id is
+            // kept so we can file Deepgram support tickets with a specific trace ID.
+            logger.error("\(logPrefix): Deepgram transcriptionFailed (request_id=\(requestId ?? "-"))")
+            appState.errorService.addError(
+                source: .deepgram,
+                severity: .error,
+                message: "Transcription failed",
+                details: "Deepgram returned empty result (request_id: \(requestId ?? "-"))"
+            )
+            popupState = .error("Transcription failed. Please try again.")
+            return nil
         } catch {
             logger.error("\(logPrefix): transcription failed - \(error)")
             appState.errorService.addError(source: .deepgram, severity: .error, message: "Transcription failed", details: error.localizedDescription)

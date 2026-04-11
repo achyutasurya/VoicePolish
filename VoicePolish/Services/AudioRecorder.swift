@@ -91,6 +91,29 @@ final class AudioRecorder {
     /// Task tracking device change debounce — cancelled if another change occurs
     private var deviceChangeTask: Task<Void, Never>?
 
+    // MARK: - RMS / peak accumulators for silence detection (v0.3.13)
+    //
+    // Tracked from inside the tap callback during recording. Used by the silent-mic
+    // pre-flight in RecordingPopupView.stopAndSend() to reject recordings client-side
+    // before calling Deepgram. Thresholds from Apple Developer Forum 710820 and
+    // Forasoft: speech sits at -40 to -20 dBFS; silence is below -60 dBFS.
+    // See plan file ~/.claude/plans/abstract-rolling-babbage.md Commit 6.
+    private let peakLevel = OSAllocatedUnfairLock<Float>(initialState: 0)
+    private let sumSquares = OSAllocatedUnfairLock<(sum: Double, frames: Int)>(initialState: (0, 0))
+
+    /// Statistics computed from the recorded buffer stream (v0.3.13).
+    /// Returned from stopRecording() alongside the URL.
+    struct RecordingStats {
+        /// Peak level in dBFS. -inf..0. A single loud moment anywhere in the recording
+        /// (even one loud sample) pushes this toward 0. Real speech has peaks above -40 dBFS.
+        let peakDBFS: Float
+        /// Mean (RMS) level in dBFS across the whole recording. -inf..0.
+        /// Silence sits below -60; real speech averages -35 to -20.
+        let meanDBFS: Float
+        /// Recording duration in seconds.
+        let durationSec: TimeInterval
+    }
+
     // MARK: - Recovery ladder state (v0.3.12)
     //
     // Replaces the one-shot recovery from commit 8fbcc0d with a bounded exponential
@@ -367,6 +390,31 @@ final class AudioRecorder {
             // Write buffer to file
             self.fileWriter?.write(from: buffer)
 
+            // Update RMS / peak accumulators for silent-mic detection (v0.3.13).
+            // Only accumulates while isCapturing is true so warmup noise isn't counted.
+            // Walks the buffer once to compute peak and sum-of-squares in the same loop.
+            // Converts the mutable var results to let constants before passing into
+            // withLock closures — Swift 6 concurrent-capture hygiene.
+            if let channelData = buffer.floatChannelData?[0] {
+                let frames = Int(buffer.frameLength)
+                if frames > 0 {
+                    var mutableMax: Float = 0
+                    var mutableSumSq: Double = 0
+                    for i in 0..<frames {
+                        let sample = abs(channelData[i])
+                        if sample > mutableMax { mutableMax = sample }
+                        mutableSumSq += Double(sample) * Double(sample)
+                    }
+                    let bufferPeak = mutableMax
+                    let bufferSumSq = mutableSumSq
+                    self.peakLevel.withLock { if bufferPeak > $0 { $0 = bufferPeak } }
+                    self.sumSquares.withLock { state in
+                        state.sum += bufferSumSq
+                        state.frames += frames
+                    }
+                }
+            }
+
             // Calculate audio level for UI
             let level = AudioRecorder.calculateLevel(buffer: buffer)
             Task { @MainActor in
@@ -531,6 +579,12 @@ final class AudioRecorder {
 
         logger.info("Recording file created. Format: \(audioFile.processingFormat.sampleRate)Hz, \(audioFile.processingFormat.channelCount)ch")
 
+        // Reset RMS / peak accumulators for silent-mic detection (v0.3.13).
+        // Must happen BEFORE isCapturing flips true so the tap callback starts
+        // accumulating from a clean slate.
+        peakLevel.withLock { $0 = 0 }
+        sumSquares.withLock { state in state = (0, 0) }
+
         // Flip the capture flag — recording starts on the very next audio callback
         isCapturing.withLock { $0 = true }
 
@@ -594,6 +648,38 @@ final class AudioRecorder {
         recordingDuration = 0
         audioLevel = 0
         logger.info("Recording cancelled")
+    }
+
+    /// Returns silence-detection statistics for the most-recently-stopped recording.
+    /// Must be called AFTER stopRecording() and BEFORE a new startRecording() — both
+    /// the peak and sum-of-squares accumulators are cleared on startRecording().
+    /// Added in v0.3.13 for client-side silent-mic detection in RecordingPopupView.
+    func getRecordingStats() -> RecordingStats {
+        let peak = peakLevel.withLock { $0 }
+        let (sum, frames) = sumSquares.withLock { $0 }
+
+        // dBFS math: 20 * log10(amplitude). Clamp at -100 to avoid -inf from log10(0).
+        // Peak is already an amplitude in [0, 1.0]; mean is sqrt(sum/frames) of squared samples.
+        let peakDBFS: Float
+        if peak > 0 {
+            peakDBFS = max(-100, 20 * log10(peak))
+        } else {
+            peakDBFS = -100
+        }
+
+        let meanDBFS: Float
+        if frames > 0 && sum > 0 {
+            let rms = sqrt(sum / Double(frames))
+            meanDBFS = max(-100, 20 * Float(log10(rms)))
+        } else {
+            meanDBFS = -100
+        }
+
+        return RecordingStats(
+            peakDBFS: peakDBFS,
+            meanDBFS: meanDBFS,
+            durationSec: accumulatedTime
+        )
     }
 
     func getAudioData() -> Data? {

@@ -32,6 +32,23 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.13] — 2026-04-11
+
+### Changed
+- **"No speech detected" is no longer a user-facing error — per user directive.** Split the old `DeepgramError.emptyTranscript` into two distinct cases:
+  - `noSpeechDetected(durationSec:)` — Deepgram returned 200 OK with empty transcript on audio ≥ 0.5 s. This is the documented response for silent audio (Deepgram discussions #765, #713, #756). Logged at `.warning` severity in the Errors tab for operator observability, but no dialog is shown. Popup auto-closes cleanly.
+  - `transcriptionFailed(requestId:)` — 200 OK but duration < 0.5 s or other odd state (real Deepgram glitch). Logged at `.error` severity with the `request_id` so Deepgram support tickets can be filed with a specific trace identifier. Dialog IS shown.
+
+### Added
+- **Client-side silent-mic pre-flight in `RecordingPopupView.stopAndSend()`.** Before uploading to Deepgram, compute RMS peak + mean dBFS + duration from tap accumulators and reject:
+  - Recordings < 0.5 s (Deepgram minimum effective duration)
+  - Recordings where `peakDBFS < -50 AND meanDBFS < -55` (silent mic)
+  Both cases log at `.warning` severity and close the popup cleanly — no Deepgram round trip, no dialog. Saves API cost and provides instant feedback on muted-mic scenarios. Thresholds from Apple Developer Forum 710820 and Forasoft's silence-trimming guide.
+- **`AudioRecorder.RecordingStats`** struct with `peakDBFS`, `meanDBFS`, `durationSec`. Populated from inside the tap callback alongside the existing `calculateLevel`. `getRecordingStats()` returns the stats for the most recently stopped recording.
+
+### Notes
+- This is the sixth and final commit in the SaaS-reliability hardening pass (v0.3.8-v0.3.13). Next version bump should be DEPLOY → 0.4.0 when shipping to production SaaS.
+
 ## [0.3.12] — 2026-04-11
 
 ### Fixed

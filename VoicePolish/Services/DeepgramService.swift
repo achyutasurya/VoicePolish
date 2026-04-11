@@ -172,12 +172,25 @@ actor DeepgramService {
         let altWordCount = firstAlt?.words?.count ?? 0
         logger.info("[Deepgram] request_id=\(metaRequestId) duration=\(String(format: "%.2f", metaDuration)) confidence=\(String(format: "%.3f", altConfidence)) wordCount=\(altWordCount)")
 
-        guard let transcript = firstAlt?.transcript, !transcript.isEmpty else {
-            throw DeepgramError.emptyTranscript
+        // v0.3.13 response classification:
+        // - Happy path: non-empty transcript → return it.
+        // - `noSpeechDetected`: Deepgram returned 200 OK with duration >= 0.5s and empty
+        //   transcript AND empty words. This is the documented response for silent audio
+        //   (see Deepgram discussions #765, #713, #756). Not a service error — route to
+        //   observability-only handling in RecordingPopupView.
+        // - `transcriptionFailed`: Deepgram returned 200 OK with duration < 0.5s or some
+        //   other odd state. This is an actual service-side glitch worth escalating,
+        //   and the request_id helps when filing Deepgram support tickets.
+        if let transcript = firstAlt?.transcript, !transcript.isEmpty {
+            logger.info("Deepgram transcription received (\(transcript.count) chars)")
+            return transcript
         }
 
-        logger.info("Deepgram transcription received (\(transcript.count) chars)")
-        return transcript
+        let wordsEmpty = firstAlt?.words?.isEmpty ?? true
+        if metaDuration >= 0.5 && wordsEmpty {
+            throw DeepgramError.noSpeechDetected(durationSec: metaDuration)
+        }
+        throw DeepgramError.transcriptionFailed(requestId: decoded.metadata?.requestId)
     }
 
     // MARK: - Response Types
@@ -222,14 +235,24 @@ actor DeepgramService {
         case invalidURL
         case invalidResponse
         case apiError(statusCode: Int, message: String)
-        case emptyTranscript
+        /// v0.3.13: Deepgram returned HTTP 200 with empty transcript for audio of
+        /// duration >= 0.5s. This is Deepgram's documented response for silent audio —
+        /// NOT a service error. Route to observability-only handling (no user dialog).
+        case noSpeechDetected(durationSec: Double)
+        /// v0.3.13: Deepgram returned HTTP 200 with empty transcript for audio of
+        /// duration < 0.5s or some other odd state. Real service-side glitch.
+        /// request_id is kept for Deepgram support tickets.
+        case transcriptionFailed(requestId: String?)
 
         var errorDescription: String? {
             switch self {
             case .invalidURL: return "Invalid Deepgram URL"
             case .invalidResponse: return "Invalid response from Deepgram"
             case .apiError(let code, let msg): return "Deepgram error (\(code)): \(msg)"
-            case .emptyTranscript: return "No speech detected in audio"
+            case .noSpeechDetected(let duration):
+                return "No speech detected in \(String(format: "%.1f", duration))s of audio"
+            case .transcriptionFailed(let requestId):
+                return "Deepgram returned empty result (request_id: \(requestId ?? "-"))"
             }
         }
     }
