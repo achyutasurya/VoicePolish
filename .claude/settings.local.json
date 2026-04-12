@@ -47,7 +47,25 @@
       "Bash(git -C /Users/suryatejaachyuta/Documents/projects/personal_apps/mac_audio_helper config:*)",
       "Bash(git -C /Users/suryatejaachyuta/Documents/projects/personal_apps/mac_audio_helper config user.email)",
       "Bash(gh auth status:*)",
-      "Bash(ssh:*)"
+      "Bash(ssh:*)",
+      "Bash(bash build.sh)",
+      "Bash(tccutil reset:*)",
+      "Bash(osascript -e 'quit app \"VoicePolish\"')",
+      "Bash(rm -rf /Applications/VoicePolish.app)",
+      "Bash(cp -R /Users/suryatejaachyuta/Documents/projects/personal_apps/mac_audio_helper/VoicePolish.app /Applications/)",
+      "Bash(find /Users/suryatejaachyuta/Documents/projects/personal_apps/mac_audio_helper -maxdepth 3 -type d ! -path */.* ! -path */.build*)",
+      "Bash(osascript -e 'quit app \"\"VoicePolish\"\"')",
+      "WebSearch",
+      "WebFetch(domain:developers.deepgram.com)",
+      "Bash(curl -sL -A \"Mozilla/5.0\" \"https://developers.deepgram.com/docs/keyterm\")",
+      "Bash(curl -sL -A \"Mozilla/5.0\" \"https://developers.deepgram.com/docs/find-and-replace\")",
+      "Bash(curl -sL -A \"Mozilla/5.0\" \"https://developers.deepgram.com/docs/keywords\")",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.vapi.ai)",
+      "Bash(curl -sL --max-time 15 \"https://developers.deepgram.com/docs/keyterm\")",
+      "Bash(curl -sL --max-time 15 \"https://developers.deepgram.com/docs/find-and-replace\")",
+      "Bash(curl -sL --max-time 15 \"https://developers.deepgram.com/docs/keywords\")",
+      "Bash(security find-internet-password:*)"
     ]
   }
 }
