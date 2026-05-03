@@ -42,6 +42,11 @@ final class TextInsertionService {
               let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false)
         else {
             logger.error("Failed to create CGEvent")
+            ErrorService.shared.addError(
+                source: .textInsertion, severity: .error,
+                message: "Failed to create paste keyboard event",
+                code: "text_insertion.cgevent_create_failed"
+            )
             throw TextInsertionError.eventCreationFailed
         }
 

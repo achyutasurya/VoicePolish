@@ -6,19 +6,27 @@ struct ErrorsView: View {
     @State private var timeFilter: HistoryTimeFilter = .last24Hours
     @State private var currentPage: Int = 1
     @State private var showClearConfirmation = false
+    @State private var showTransient = false
 
     private let itemsPerPage = 8
 
-    private var filtered: [ErrorEntry] {
-        errorService.getEntries(filter: timeFilter)
+    private var split: (actionable: [ErrorEntry], transientGroups: [TransientGroup]) {
+        errorService.getDisplayEntries(filter: timeFilter)
     }
 
+    private var actionable: [ErrorEntry] { split.actionable }
+    private var transientGroups: [TransientGroup] { split.transientGroups }
+
     private var totalPages: Int {
-        max(1, Int(ceil(Double(filtered.count) / Double(itemsPerPage))))
+        max(1, Int(ceil(Double(actionable.count) / Double(itemsPerPage))))
     }
 
     private var pageEntries: [ErrorEntry] {
-        Array(filtered.dropFirst((currentPage - 1) * itemsPerPage).prefix(itemsPerPage))
+        Array(actionable.dropFirst((currentPage - 1) * itemsPerPage).prefix(itemsPerPage))
+    }
+
+    private var transientCount: Int {
+        transientGroups.reduce(0) { $0 + $1.count }
     }
 
     var body: some View {
@@ -36,7 +44,7 @@ struct ErrorsView: View {
 
                 Spacer()
 
-                Text("\(filtered.count) errors")
+                Text("\(actionable.count) actionable")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -44,7 +52,7 @@ struct ErrorsView: View {
             // Clear All
             HStack {
                 Spacer()
-                if !filtered.isEmpty {
+                if !actionable.isEmpty || !transientGroups.isEmpty {
                     if showClearConfirmation {
                         HStack(spacing: 4) {
                             Text("Delete all errors?")
@@ -74,7 +82,7 @@ struct ErrorsView: View {
             Divider()
 
             // Entries list
-            if pageEntries.isEmpty {
+            if pageEntries.isEmpty && transientGroups.isEmpty {
                 VStack(spacing: 8) {
                     Spacer()
                     Image(systemName: "checkmark.circle")
@@ -94,6 +102,14 @@ struct ErrorsView: View {
                     LazyVStack(spacing: 8) {
                         ForEach(pageEntries) { entry in
                             ErrorEntryCard(entry: entry)
+                        }
+
+                        if !transientGroups.isEmpty {
+                            TransientSummaryBlock(
+                                groups: transientGroups,
+                                totalCount: transientCount,
+                                expanded: $showTransient
+                            )
                         }
                     }
                 }
@@ -187,6 +203,13 @@ struct ErrorEntryCard: View {
                 .font(.caption)
                 .lineLimit(isExpanded ? nil : 2)
 
+            if let requestId = entry.requestId, !requestId.isEmpty {
+                Text("Request ID: \(requestId)")
+                    .font(.caption2.monospaced())
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
+            }
+
             if let details = entry.details, !details.isEmpty {
                 Button(isExpanded ? "Hide Details" : "Show Details") {
                     withAnimation { isExpanded.toggle() }
@@ -215,10 +238,97 @@ struct ErrorEntryCard: View {
 
     private func copyErrorDetails() {
         var text = "[\(entry.severity.rawValue)] [\(entry.source.rawValue)] \(entry.message)"
+        if let requestId = entry.requestId, !requestId.isEmpty {
+            text += "\nRequest ID: \(requestId)"
+        }
         if let details = entry.details, !details.isEmpty {
             text += "\n\nDetails:\n\(details)"
         }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+private struct TransientSummaryBlock: View {
+    let groups: [TransientGroup]
+    let totalCount: Int
+    @Binding var expanded: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation { expanded.toggle() }
+            } label: {
+                HStack {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                    Text("Transient (\(totalCount))")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text(expanded ? "Hide" : "Show")
+                        .font(.caption2)
+                        .foregroundColor(.accentColor)
+                }
+            }
+            .buttonStyle(.borderless)
+
+            if expanded {
+                ForEach(groups) { group in
+                    TransientGroupRow(group: group)
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.gray.opacity(0.06))
+        .cornerRadius(8)
+    }
+}
+
+private struct TransientGroupRow: View {
+    let group: TransientGroup
+
+    private var severityColor: Color {
+        switch group.severity {
+        case .warning: return .yellow
+        case .error: return .orange
+        case .critical: return .purple
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(severityColor.opacity(0.7))
+                .frame(width: 6, height: 6)
+                .padding(.top, 5)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(group.source.rawValue)
+                        .font(.caption2.bold())
+                        .foregroundColor(.secondary)
+                    Text("·")
+                        .foregroundColor(.secondary)
+                    Text(group.title)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                HStack(spacing: 6) {
+                    Text("\(group.count)×")
+                        .font(.caption2.monospaced())
+                        .foregroundColor(.secondary)
+                    Text("last:")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(group.latest, style: .relative)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(.vertical, 2)
     }
 }

@@ -32,6 +32,30 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.14] — 2026-05-02
+
+### Added
+- **`ErrorEntry.actionable`, `.transient`, `.requestId`, `.code` fields.** Every persisted error now carries enough metadata to drive UI grouping and support tickets. Backward-compatible Codable: pre-v0.3.14 entries decode with sensible defaults (`actionable: true`, `transient: false`).
+- **`ErrorService.getDisplayEntries(filter:)`** — splits entries into actionable rows and transient summary groups so the Errors tab can show a calm view by default with an expandable "Transient (N)" block.
+- **Transient warning emitted on every successful audio engine recovery** (`audio.engine.recovered`, attempts taken). Counts the noise floor of "engine was broken but recovered" without alarming the user.
+- **Errors-tab UI grouping**: collapsible "Transient (N)" summary block; each group shows `count × source · message · last: relative-time`. Request-ID surfaced inline on individual error cards with `textSelection(.enabled)` so users can paste it into support tickets.
+
+### Changed
+- **Routed every previously console-only `logger.error()` call through `ErrorService.addError()`** so the Errors tab matches the raw log error count instead of silently undercounting (~33% gap pre-v0.3.14):
+  - `DeepgramService.verifyAPIKey` — HTTP failure and network error paths (`deepgram.key_verification_*`)
+  - `OpenRouterService.verifyAPIKey` — HTTP failure and network error paths (`openrouter.key_verification_*`)
+  - `OpenRouterService.verifyModel` — both error branches and network error path (`openrouter.model_verification_*`)
+  - `HistoryService.loadFromDisk` / `saveToDisk` — surfaces silent data-loss risk (`history.load_failed` / `history.save_failed`)
+  - `TextInsertionService.insertText` — CGEvent creation failure (`text_insertion.cgevent_create_failed`)
+  - `VoicePolishApp` initial warmup failure (transient, observability-only) and missing API-key guards (`settings.deepgram_key_missing`, `settings.openrouter_key_missing`)
+- **`hasRecentErrors` now ignores transient + non-actionable entries** so the menubar dot only lights up on genuinely actionable problems.
+- **`ErrorService.{load,save}FromDisk` errors stay console-only on purpose** — recursing through `addError()` would loop if the storage layer itself is the failure mode.
+
+### Notes
+- First commit in the post-hardening observability pass. Sets up the baseline that v0.3.15+ fixes can be measured against (verification target: errors.json count vs `grep -c ERROR voicepolish-*.log` gap drops from ~33% to <5%).
+
+---
+
 ## [0.3.13] — 2026-04-11
 
 ### Changed

@@ -57,6 +57,12 @@ actor OpenRouterService {
                 await MainActor.run {
                     settings.isOpenRouterKeyValid = false
                     settings.openRouterKeyError = "Invalid API key (HTTP \(httpResponse.statusCode))"
+                    ErrorService.shared.addError(
+                        source: .openRouter, severity: .error,
+                        message: "OpenRouter API key invalid",
+                        details: "HTTP \(httpResponse.statusCode)",
+                        code: "openrouter.key_verification_failed"
+                    )
                 }
                 logger.error("OpenRouter API key verification failed: HTTP \(httpResponse.statusCode)")
             }
@@ -64,6 +70,12 @@ actor OpenRouterService {
             await MainActor.run {
                 settings.isOpenRouterKeyValid = false
                 settings.openRouterKeyError = "Network error: \(error.localizedDescription)"
+                ErrorService.shared.addError(
+                    source: .openRouter, severity: .error,
+                    message: "OpenRouter API key verification network error",
+                    details: error.localizedDescription,
+                    code: "openrouter.key_verification_network_error"
+                )
             }
             logger.error("OpenRouter API key verification error: \(error)")
         }
@@ -110,13 +122,37 @@ actor OpenRouterService {
                    let error = json["error"] as? [String: Any],
                    let message = error["message"] as? String {
                     logger.error("Model verification failed: \(message)")
+                    await MainActor.run {
+                        ErrorService.shared.addError(
+                            source: .openRouter, severity: .error,
+                            message: "Model verification failed (\(modelId))",
+                            details: message,
+                            code: "openrouter.model_verification_failed"
+                        )
+                    }
                     return message
                 }
                 logger.error("Model verification failed: \(errorBody)")
+                await MainActor.run {
+                    ErrorService.shared.addError(
+                        source: .openRouter, severity: .error,
+                        message: "Model verification failed (\(modelId))",
+                        details: "HTTP \(httpResponse.statusCode): \(errorBody)",
+                        code: "openrouter.model_verification_failed"
+                    )
+                }
                 return "HTTP \(httpResponse.statusCode)"
             }
         } catch {
             logger.error("Model verification error: \(error)")
+            await MainActor.run {
+                ErrorService.shared.addError(
+                    source: .openRouter, severity: .error,
+                    message: "Model verification network error (\(modelId))",
+                    details: error.localizedDescription,
+                    code: "openrouter.model_verification_network_error"
+                )
+            }
             return error.localizedDescription
         }
     }

@@ -64,6 +64,12 @@ final class HistoryService {
             logger.info("History: loaded \(entries.count) entries from disk")
         } catch {
             logger.error("History: failed to load - \(error)")
+            ErrorService.shared.addError(
+                source: .general, severity: .error,
+                message: "Failed to load history from disk",
+                details: error.localizedDescription,
+                code: "history.load_failed"
+            )
         }
     }
 
@@ -76,6 +82,12 @@ final class HistoryService {
             try data.write(to: fileURL, options: .atomic)
         } catch {
             logger.error("History: failed to save - \(error)")
+            ErrorService.shared.addError(
+                source: .general, severity: .error,
+                message: "Failed to save history to disk",
+                details: error.localizedDescription,
+                code: "history.save_failed"
+            )
         }
     }
 }

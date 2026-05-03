@@ -762,7 +762,16 @@ final class AudioRecorder {
             // recoveryAttempt to 0 from inside the tap block.
             do {
                 try await warmUp()
-                logger.info("Recovery attempt \(recoveryAttempt + 1) succeeded — engine is running")
+                let attemptsTaken = recoveryAttempt + 1
+                logger.info("Recovery attempt \(attemptsTaken) succeeded — engine is running")
+                // P0 #4: surface as transient observability so the noise floor
+                // of "engine recovered automatically" is visible without alarming the user.
+                ErrorService.shared.addError(
+                    source: .audioRecorder, severity: .warning,
+                    message: "Audio engine recovered (\(attemptsTaken) attempt\(attemptsTaken == 1 ? "" : "s"))",
+                    actionable: false, transient: true,
+                    code: "audio.engine.recovered"
+                )
                 // recoveryAttempt has been (or will be) reset by the tap callback
                 return
             } catch {

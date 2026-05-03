@@ -35,6 +35,12 @@ actor DeepgramService {
                 await MainActor.run {
                     settings.isDeepgramKeyValid = false
                     settings.deepgramKeyError = "Invalid API key (HTTP \(httpResponse.statusCode))"
+                    ErrorService.shared.addError(
+                        source: .deepgram, severity: .error,
+                        message: "Deepgram API key invalid",
+                        details: "HTTP \(httpResponse.statusCode)",
+                        code: "deepgram.key_verification_failed"
+                    )
                 }
                 logger.error("Deepgram API key verification failed: HTTP \(httpResponse.statusCode)")
             }
@@ -42,6 +48,12 @@ actor DeepgramService {
             await MainActor.run {
                 settings.isDeepgramKeyValid = false
                 settings.deepgramKeyError = "Network error: \(error.localizedDescription)"
+                ErrorService.shared.addError(
+                    source: .deepgram, severity: .error,
+                    message: "Deepgram API key verification network error",
+                    details: error.localizedDescription,
+                    code: "deepgram.key_verification_network_error"
+                )
             }
             logger.error("Deepgram API key verification error: \(error)")
         }

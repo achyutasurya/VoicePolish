@@ -54,6 +54,15 @@ final class AppState {
                 self?.logger.info("Initial audio engine warmup successful")
             } catch {
                 self?.logger.error("Audio engine warm-up failed: \(error)")
+                // Transient: app will retry warmup on next hotkey press anyway, so
+                // surface as observability-only — no need to scare the user.
+                ErrorService.shared.addError(
+                    source: .audioRecorder, severity: .warning,
+                    message: "Initial audio engine warmup failed",
+                    details: error.localizedDescription,
+                    actionable: false, transient: true,
+                    code: "audio.warmup_initial_failed"
+                )
             }
         }
     }
@@ -113,11 +122,23 @@ final class AppState {
             // Check required settings
             guard !settings.deepgramAPIKey.isEmpty else {
                 logger.error("Deepgram API key not configured")
+                errorService.addError(
+                    source: .general, severity: .error,
+                    message: "Deepgram API key not configured",
+                    details: "Open Settings and paste your Deepgram API key.",
+                    code: "settings.deepgram_key_missing"
+                )
                 return
             }
             if settings.sendToLLMEnabled {
                 guard !settings.openRouterAPIKey.isEmpty else {
                     logger.error("OpenRouter API key not configured")
+                    errorService.addError(
+                        source: .general, severity: .error,
+                        message: "OpenRouter API key not configured",
+                        details: "Open Settings and paste your OpenRouter API key, or disable Send to LLM.",
+                        code: "settings.openrouter_key_missing"
+                    )
                     return
                 }
             }
