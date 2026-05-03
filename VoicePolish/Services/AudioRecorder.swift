@@ -263,6 +263,29 @@ final class AudioRecorder {
         // we don't accidentally observe a stale `true` from the previous engine.
         firstBufferReceived.withLock { $0 = false }
 
+        // P1 #2 (v0.3.18): coreaudiod fast-fail probe. A basic HAL property
+        // query normally returns in <10ms. If it takes >200ms, the daemon is
+        // presumed deadlocked — bail before AVAudioEngine() can hang for
+        // minutes (Apr 30 2026 incident: 27.8-minute hang in engine init,
+        // matching the documented JUCE callback-vs-AudioDeviceStart deadlock).
+        // Ref: https://forum.juce.com/t/coreaudio-deadlock-when-stopping-and-restarting-device/51882
+        let probeStart = CFAbsoluteTimeGetCurrent()
+        do {
+            try await probeCoreAudioHealth(timeoutMs: 200)
+            let probeElapsed = (CFAbsoluteTimeGetCurrent() - probeStart) * 1000
+            logger.debug("coreaudiod probe passed in \(String(format: "%.0f", probeElapsed))ms")
+        } catch {
+            let probeElapsed = (CFAbsoluteTimeGetCurrent() - probeStart) * 1000
+            logger.error("coreaudiod probe failed after \(String(format: "%.0f", probeElapsed))ms — daemon likely deadlocked")
+            ErrorService.shared.addError(
+                source: .audioRecorder, severity: .error,
+                message: "macOS audio system unresponsive",
+                details: "The CoreAudio daemon is not responding. Try restarting it from Terminal:\n  sudo killall coreaudiod\nThen attempt the recording again.",
+                code: "audio.coreaudiod_stuck"
+            )
+            throw error
+        }
+
         // CoreAudio HAL preflight (v0.3.11). Before calling AVAudioEngine(), confirm
         // that the default input device is non-zero, alive, and has at least one
         // input stream with at least one channel. Closes the kAudioHardwareBadDeviceError
@@ -943,6 +966,32 @@ final class AudioRecorder {
     // check. osstatus.com confirms 560227702 = kAudioHardwareBadDeviceError.
     // https://www.osstatus.com/search/results?platform=all&framework=all&search=560227702
 
+    /// Fast-fail health probe for `coreaudiod` (v0.3.18, P1 #2). Races a basic
+    /// HAL property query against a `timeoutMs`-millisecond timer. A healthy
+    /// daemon returns in <10ms; if the probe times out, the daemon is presumed
+    /// deadlocked and we throw `coreAudioStuck` instead of letting
+    /// `AVAudioEngine()` block for minutes (Apr 30 2026: 27.8-minute hang).
+    ///
+    /// Note: cancellation cannot interrupt the underlying synchronous CoreAudio
+    /// call — the orphaned task may still complete in the background. The point
+    /// is to release the *caller* fast so a clear diagnostic surfaces.
+    /// Ref: https://forum.juce.com/t/coreaudio-deadlock-when-stopping-and-restarting-device/51882
+    private nonisolated func probeCoreAudioHealth(timeoutMs: Int = 200) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                _ = self.getDefaultInputDeviceID()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+                throw RecorderError.coreAudioStuck("HAL property query exceeded \(timeoutMs)ms")
+            }
+            guard let _ = try await group.next() else {
+                throw RecorderError.coreAudioStuck("HAL probe returned no result")
+            }
+            group.cancelAll()
+        }
+    }
+
     /// Returns the current default input device ID, or nil if none is set.
     private nonisolated func getDefaultInputDeviceID() -> AudioDeviceID? {
         var deviceID = AudioDeviceID(0)
@@ -1070,6 +1119,10 @@ final class AudioRecorder {
         /// v0.3.11: CoreAudio HAL preflight failed — default input device is not alive
         /// or has no input streams yet. Transient; should be retried via backoff ladder.
         case deviceNotReady(String)
+        /// v0.3.18: a basic HAL property query exceeded the fast-fail probe timeout
+        /// (default 200ms). `coreaudiod` is presumed deadlocked — abort warmup
+        /// quickly instead of letting `AVAudioEngine()` hang for minutes.
+        case coreAudioStuck(String)
 
         var errorDescription: String? {
             switch self {
@@ -1085,6 +1138,8 @@ final class AudioRecorder {
                 return "Audio engine not ready: \(reason)"
             case .deviceNotReady(let reason):
                 return "Default input device not ready: \(reason)"
+            case .coreAudioStuck(let reason):
+                return "macOS audio system unresponsive: \(reason)"
             }
         }
 
@@ -1093,7 +1148,7 @@ final class AudioRecorder {
         /// mis-classifying transient CoreAudio HAL races as terminal failures.
         var isTransient: Bool {
             switch self {
-            case .deviceNotReady, .engineStartTimeout:
+            case .deviceNotReady, .engineStartTimeout, .coreAudioStuck:
                 return true
             case .engineBroken(let reason):
                 // "Stale format during warmup" from v0.3.10 is also transient — the graph

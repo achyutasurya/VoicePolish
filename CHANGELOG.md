@@ -32,6 +32,20 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.18] — 2026-05-02
+
+### Added
+- **`coreaudiod` fast-fail probe** (200ms HAL property query race) at the start of `performWarmup()`. Healthy daemons return in <10ms; if the probe times out, the daemon is presumed deadlocked and warmup throws `RecorderError.coreAudioStuck` immediately instead of letting `AVAudioEngine()` block for minutes.
+  - Defends against the documented JUCE callback-vs-`AudioDeviceStart` deadlock pattern (JUCE Forum #51882). The Apr 30 2026 incident logged in `voicepolish-2026-04-30.log` shows a 27.8-minute hang in engine init at 18:35:30 UTC — exactly this failure mode. Probe converts that into a sub-second fail-fast.
+  - When the probe trips, surfaces an actionable diagnostic in the Errors tab (`audio.coreaudiod_stuck`) telling the user to `sudo killall coreaudiod` and retry.
+- **New `RecorderError.coreAudioStuck(String)` case** with `isTransient = true` so the next user-initiated recording can re-attempt without manual intervention if the daemon recovers.
+
+### Notes
+- Verification: `sudo killall -STOP coreaudiod` (suspend the daemon), trigger a recording — the warmup attempt should fail in <500ms with the new diagnostic in the Errors tab. Then `sudo killall -CONT coreaudiod` and verify recovery.
+- Cancellation cannot interrupt the underlying synchronous CoreAudio call — orphaned probe tasks may still complete in the background. The point is to release the *caller* fast so the user sees the issue.
+
+---
+
 ## [0.3.17] — 2026-05-02
 
 ### Changed
