@@ -32,6 +32,22 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.15] — 2026-05-02
+
+### Added
+- **Deepgram `dg-request-id` header capture on errors.** Non-200 responses now carry the canonical Deepgram trace ID even when the response body is malformed. `DeepgramError.apiError` gains a `requestId` associated value, and `DeepgramError.requestId` exposes a uniform getter so the popup can route IDs to `ErrorService.addError(requestId:)` regardless of which error case fired.
+- **Deepgram `?tag=voicepolish-{version}` query parameter** on every `/v1/listen` request so Deepgram's project-level analytics (List Project Requests endpoint) can filter VoicePolish traffic by version. URL-encoded.
+- **OpenRouter `X-Generation-Id` header capture on every response** (success and error paths). Added `requestId` to `OpenRouterError.apiError` and `OpenRouterError.emptyResponse`, plus a uniform `OpenRouterError.requestId` getter. Falls back to `x-request-id` if `X-Generation-Id` is absent. Logged with usage tokens for observability.
+- **`code:` parameter on transcription/LLM error entries**: `deepgram.transcription_failed`, `deepgram.transcription_error`, `openrouter.llm_failed` — drives the Errors-tab grouping introduced in v0.3.14.
+
+### Changed
+- `RecordingPopupView` catch blocks now extract the upstream request ID via the typed `requestId` getter (`(error as? DeepgramError)?.requestId`, `(error as? OpenRouterError)?.requestId`) and pass it through `ErrorService.addError(requestId:)`. The Errors tab card surfaces it inline with selectable text.
+
+### Notes
+- Verification: trigger a Deepgram 5xx (malform an API key) or an OpenRouter rate limit, confirm the request ID appears on the resulting Errors-tab entry. Without this, any future support ticket would be untraceable.
+
+---
+
 ## [0.3.14] — 2026-05-02
 
 ### Added

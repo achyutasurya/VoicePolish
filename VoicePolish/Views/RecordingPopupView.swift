@@ -473,13 +473,25 @@ struct RecordingPopupView: View {
                 source: .deepgram,
                 severity: .error,
                 message: "Transcription failed",
-                details: "Deepgram returned empty result (request_id: \(requestId ?? "-"))"
+                details: "Deepgram returned empty result",
+                requestId: requestId,
+                code: "deepgram.transcription_failed"
             )
             popupState = .error("Transcription failed. Please try again.")
             return nil
         } catch {
-            logger.error("\(logPrefix): transcription failed - \(error)")
-            appState.errorService.addError(source: .deepgram, severity: .error, message: "Transcription failed", details: error.localizedDescription)
+            // P0 cross-cutting A: capture dg-request-id so the user can paste it
+            // into a Deepgram support ticket.
+            let requestId = (error as? DeepgramService.DeepgramError)?.requestId
+            logger.error("\(logPrefix): transcription failed - \(error) request_id=\(requestId ?? "-")")
+            appState.errorService.addError(
+                source: .deepgram,
+                severity: .error,
+                message: "Transcription failed",
+                details: error.localizedDescription,
+                requestId: requestId,
+                code: "deepgram.transcription_error"
+            )
             popupState = .error("Transcription failed: \(error.localizedDescription)")
             return nil
         }
@@ -510,8 +522,18 @@ struct RecordingPopupView: View {
                 logger.pipelineStep("total pipeline", duration: CFAbsoluteTimeGetCurrent() - pipelineStart)
                 return responseText
             } catch {
-                logger.error("\(logPrefix): LLM failed - \(error)")
-                appState.errorService.addError(source: .openRouter, severity: .error, message: "LLM processing failed", details: error.localizedDescription)
+                // P0 cross-cutting A: capture X-Generation-Id so the user can paste it
+                // into an OpenRouter support ticket.
+                let requestId = (error as? OpenRouterService.OpenRouterError)?.requestId
+                logger.error("\(logPrefix): LLM failed - \(error) X-Generation-Id=\(requestId ?? "-")")
+                appState.errorService.addError(
+                    source: .openRouter,
+                    severity: .error,
+                    message: "LLM processing failed",
+                    details: error.localizedDescription,
+                    requestId: requestId,
+                    code: "openrouter.llm_failed"
+                )
                 popupState = .error("LLM processing failed: \(error.localizedDescription)")
                 // Transcript is already saved to history
                 return nil

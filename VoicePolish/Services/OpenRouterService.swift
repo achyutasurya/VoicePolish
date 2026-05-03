@@ -192,6 +192,11 @@ actor OpenRouterService {
         }
 
         let responseHeaders = httpResponse.allHeaderFields
+        // OpenRouter exposes the per-call generation ID in this header. It's the
+        // only durable trace ID for support tickets — capture on every response.
+        // https://openrouter.ai/docs/api/reference/streaming
+        let generationId = httpResponse.value(forHTTPHeaderField: "X-Generation-Id")
+            ?? httpResponse.value(forHTTPHeaderField: "x-request-id")
 
         logger.apiCall(
             service: "OpenRouter",
@@ -215,24 +220,26 @@ actor OpenRouterService {
                 responseSize: data.count,
                 duration: duration,
                 headers: responseHeaders,
-                error: errorBody
+                error: "X-Generation-Id=\(generationId ?? "-") body=\(errorBody)"
             )
-            throw OpenRouterError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
+            throw OpenRouterError.apiError(statusCode: httpResponse.statusCode, message: errorBody, requestId: generationId)
         }
 
         let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: data)
 
         if let error = decoded.error {
-            throw OpenRouterError.apiError(statusCode: httpResponse.statusCode, message: error.message)
+            throw OpenRouterError.apiError(statusCode: httpResponse.statusCode, message: error.message, requestId: generationId)
         }
 
         guard let text = decoded.choices?.first?.message.content, !text.isEmpty else {
-            throw OpenRouterError.emptyResponse
+            throw OpenRouterError.emptyResponse(requestId: generationId)
         }
 
-        // Log token usage if available
+        // Log token usage + generation ID if available
         if let usage = decoded.usage {
-            logger.info("OpenRouter usage: prompt=\(usage.prompt_tokens ?? 0) completion=\(usage.completion_tokens ?? 0) total=\(usage.total_tokens ?? 0) model=\(decoded.model ?? model)")
+            logger.info("OpenRouter usage: prompt=\(usage.prompt_tokens ?? 0) completion=\(usage.completion_tokens ?? 0) total=\(usage.total_tokens ?? 0) model=\(decoded.model ?? model) X-Generation-Id=\(generationId ?? "-")")
+        } else {
+            logger.info("OpenRouter X-Generation-Id=\(generationId ?? "-")")
         }
 
         logger.info("OpenRouter response received (\(text.count) chars)")
@@ -269,14 +276,24 @@ actor OpenRouterService {
 
     enum OpenRouterError: LocalizedError {
         case invalidResponse
-        case apiError(statusCode: Int, message: String)
-        case emptyResponse
+        case apiError(statusCode: Int, message: String, requestId: String?)
+        case emptyResponse(requestId: String?)
 
         var errorDescription: String? {
             switch self {
             case .invalidResponse: return "Invalid response from OpenRouter"
-            case .apiError(let code, let msg): return "OpenRouter error (\(code)): \(msg)"
+            case .apiError(let code, let msg, _): return "OpenRouter error (\(code)): \(msg)"
             case .emptyResponse: return "Empty response from model"
+            }
+        }
+
+        /// `X-Generation-Id` from the OpenRouter response. Pass into
+        /// ``ErrorService.addError(requestId:)`` so users can quote it in support tickets.
+        var requestId: String? {
+            switch self {
+            case .invalidResponse: return nil
+            case .apiError(_, _, let id): return id
+            case .emptyResponse(let id): return id
             }
         }
     }

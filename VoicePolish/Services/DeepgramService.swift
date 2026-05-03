@@ -64,7 +64,12 @@ actor DeepgramService {
     func transcribeAudio(wavData: Data, apiKey: String, model: String,
                          keyterms: [String] = [],
                          vocabularyEnabled: Bool = false) async throws -> String {
-        var urlString = "\(baseURL)/listen?model=\(model)&smart_format=true"
+        // Tag every request so Deepgram's project-level analytics can filter
+        // VoicePolish traffic by version. See:
+        // https://developers.deepgram.com/docs/stt-tagging
+        let tagValue = "voicepolish-\(appVersion)"
+            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "voicepolish"
+        var urlString = "\(baseURL)/listen?model=\(model)&smart_format=true&tag=\(tagValue)"
 
         if vocabularyEnabled && !keyterms.isEmpty {
             // Character set for encoding query parameter VALUES (not full query strings).
@@ -157,6 +162,9 @@ actor DeepgramService {
 
         guard httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
+            // The dg-request-id header is the canonical Deepgram trace ID and is
+            // present on errors too (the response body may be malformed). Capture it.
+            let headerRequestId = httpResponse.value(forHTTPHeaderField: "dg-request-id")
             logger.apiCall(
                 service: "Deepgram",
                 endpoint: urlString,
@@ -166,9 +174,9 @@ actor DeepgramService {
                 responseSize: data.count,
                 duration: rtt,
                 headers: httpResponse.allHeaderFields,
-                error: errorBody
+                error: "request_id=\(headerRequestId ?? "-") body=\(errorBody)"
             )
-            throw DeepgramError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
+            throw DeepgramError.apiError(statusCode: httpResponse.statusCode, message: errorBody, requestId: headerRequestId)
         }
 
         let decoded = try JSONDecoder().decode(DeepgramResponse.self, from: data)
@@ -246,7 +254,7 @@ actor DeepgramService {
     enum DeepgramError: LocalizedError {
         case invalidURL
         case invalidResponse
-        case apiError(statusCode: Int, message: String)
+        case apiError(statusCode: Int, message: String, requestId: String?)
         /// v0.3.13: Deepgram returned HTTP 200 with empty transcript for audio of
         /// duration >= 0.5s. This is Deepgram's documented response for silent audio —
         /// NOT a service error. Route to observability-only handling (no user dialog).
@@ -260,11 +268,21 @@ actor DeepgramService {
             switch self {
             case .invalidURL: return "Invalid Deepgram URL"
             case .invalidResponse: return "Invalid response from Deepgram"
-            case .apiError(let code, let msg): return "Deepgram error (\(code)): \(msg)"
+            case .apiError(let code, let msg, _): return "Deepgram error (\(code)): \(msg)"
             case .noSpeechDetected(let duration):
                 return "No speech detected in \(String(format: "%.1f", duration))s of audio"
             case .transcriptionFailed(let requestId):
                 return "Deepgram returned empty result (request_id: \(requestId ?? "-"))"
+            }
+        }
+
+        /// Deepgram trace ID (`dg-request-id` header / `metadata.request_id`).
+        /// Pass to ``ErrorService.addError(requestId:)`` so support tickets carry it.
+        var requestId: String? {
+            switch self {
+            case .invalidURL, .invalidResponse, .noSpeechDetected: return nil
+            case .apiError(_, _, let id): return id
+            case .transcriptionFailed(let id): return id
             }
         }
     }
