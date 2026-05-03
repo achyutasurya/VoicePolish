@@ -32,6 +32,20 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.23] — 2026-05-02
+
+### Added
+- **Inner 1-second timeout per CoreAudio format query** (P2 cross-cutting B). `inputNode.outputFormat(forBus: 0)` and `inputNode.inputFormat(forBus: 0)` are now each wrapped in a `withThrowingTaskGroup` race against a 1-second sleep inside the existing detached engine-creation task.
+  - Defense in depth for the Apr 30 2026 27.8-minute hang. The outer 10-second warmup race already caught the whole pass; these inner caps fail fast and identify *which specific* CoreAudio call hung (logged with the call label, e.g. `inputNode.outputFormat(forBus:0) exceeded 1000ms`).
+  - Throws `RecorderError.coreAudioStuck` (transient — routes to backoff ladder).
+- **`AudioRecorder.raceWithTimeout(seconds:label:operation:)` static helper** (private). Generic over `Sendable T`, uses the optional-as-discriminator pattern (Swift 6 generic functions can't host nested types). Cancellation can't interrupt the underlying synchronous CoreAudio call but the caller is released.
+- Format fields (sampleRate, channels, commonFormat, isInterleaved) are extracted into a Sendable tuple inside the timed closure so the value can cross the task-group boundary cleanly without `@unchecked Sendable` wrappers around `AVAudioFormat`.
+
+### Notes
+- Verification: `sudo killall -STOP coreaudiod`, trigger a recording — the warmup attempt should now fail in ~1 s with a log line identifying which format call hung, rather than waiting on the outer 10 s cap.
+
+---
+
 ## [0.3.22] — 2026-05-02
 
 ### Added

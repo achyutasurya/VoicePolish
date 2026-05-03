@@ -352,23 +352,35 @@ final class AudioRecorder {
         //      https://www.mail-archive.com/coreaudio-api@lists.apple.com/msg01754.html
         logger.debug("Creating AVAudioEngine instance (off MainActor to prevent UI freeze)")
         let engineCreateStart = CFAbsoluteTimeGetCurrent()
-        let setup = try await Task.detached { () throws -> EngineSetup in
+        let setup = try await Task.detached { () async throws -> EngineSetup in
             let engine = AVAudioEngine()
             let inputNode = engine.inputNode
-            let outputFormat = inputNode.outputFormat(forBus: 0)
-            let hardwareSampleRate = inputNode.inputFormat(forBus: 0).sampleRate
+
+            // P2 cross-cutting B (v0.3.23): inner 1-second timeout per format
+            // query. Each call can independently hang inside coreaudiod during
+            // device-graph reconfiguration. Extract the format fields into a
+            // Sendable tuple so the value can cross the task-group boundary.
+            let outputFormatTuple: (sampleRate: Double, channels: AVAudioChannelCount, common: AVAudioCommonFormat, interleaved: Bool) =
+                try await AudioRecorder.raceWithTimeout(seconds: 1.0, label: "inputNode.outputFormat(forBus:0)") {
+                    let f = inputNode.outputFormat(forBus: 0)
+                    return (f.sampleRate, f.channelCount, f.commonFormat, f.isInterleaved)
+                }
+            let hardwareSampleRate: Double =
+                try await AudioRecorder.raceWithTimeout(seconds: 1.0, label: "inputNode.inputFormat(forBus:0)") {
+                    inputNode.inputFormat(forBus: 0).sampleRate
+                }
 
             // Validate the hardware side of the query. If either is zero here, the
             // graph is in a transitional state and installTap would fail silently.
-            guard hardwareSampleRate > 0, outputFormat.channelCount > 0 else {
-                throw RecorderError.engineBroken("Stale format during warmup: hardwareSampleRate=\(hardwareSampleRate), outputChannels=\(outputFormat.channelCount)")
+            guard hardwareSampleRate > 0, outputFormatTuple.channels > 0 else {
+                throw RecorderError.engineBroken("Stale format during warmup: hardwareSampleRate=\(hardwareSampleRate), outputChannels=\(outputFormatTuple.channels)")
             }
 
             guard let reconciledFormat = AVAudioFormat(
-                commonFormat: outputFormat.commonFormat,
+                commonFormat: outputFormatTuple.common,
                 sampleRate: hardwareSampleRate,
-                channels: outputFormat.channelCount,
-                interleaved: outputFormat.isInterleaved
+                channels: outputFormatTuple.channels,
+                interleaved: outputFormatTuple.interleaved
             ) else {
                 throw RecorderError.formatCreationFailed
             }
@@ -996,6 +1008,41 @@ final class AudioRecorder {
         }
     }
 
+
+    /// Races a synchronous Sendable-returning operation against a timeout
+    /// (v0.3.23, P2 cross-cutting B). Used to bound individual hot CoreAudio
+    /// calls inside `performWarmup` so each has its own inner cap — the outer
+    /// 10 s warmup race catches misses at a coarser granularity. Defense in
+    /// depth for the Apr 30 2026 hang, where the suspected location was inside
+    /// `inputNode.outputFormat()` / `inputNode.inputFormat()`. On timeout,
+    /// throws `coreAudioStuck` with the call label so logs identify which
+    /// specific call was the offender.
+    ///
+    /// Note: cancellation can't interrupt the underlying synchronous call, but
+    /// the caller is released and a clear diagnostic surfaces.
+    private static func raceWithTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        label: String,
+        operation: @escaping @Sendable () -> T
+    ) async throws -> T {
+        // T? carries the outcome: a Sendable wrapped result, or nil on timeout.
+        // Generic functions can't host nested types in Swift 6, hence the
+        // optional-as-discriminator pattern.
+        let result: T? = try await withThrowingTaskGroup(of: T?.self) { group in
+            group.addTask { operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            let first = try await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        if let result {
+            return result
+        }
+        throw RecorderError.coreAudioStuck("\(label) exceeded \(Int(seconds * 1000))ms")
+    }
 
     /// Render an `OSStatus`/HAL code as its FourCharCode representation
     /// (e.g. `560227702` → `'!dev'`). Added in v0.3.20 so unknown codes that
