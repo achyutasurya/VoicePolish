@@ -400,23 +400,31 @@ struct RecordingPopupView: View {
                 source: .deepgram,
                 severity: .warning,
                 message: "No speech detected",
-                details: "Recording too short: \(String(format: "%.2f", stats.durationSec))s"
+                details: "Recording too short: \(String(format: "%.2f", stats.durationSec))s",
+                actionable: false, transient: true,
+                code: "deepgram.no_speech_detected"
             )
             appState.audioRecorder.cancelRecording()
             onClose()
             return nil
         }
 
-        // RMS silence guard: peak < -50 dBFS AND mean < -55 dBFS indicates silent mic.
+        // RMS silence guard: peak < -45 dBFS AND mean < -50 dBFS indicates silent mic.
         // The AND condition gives near-zero false negatives on real speech: a real
-        // recording with even one brief louder moment will have peak > -50 dBFS.
-        if stats.peakDBFS < -50 && stats.meanDBFS < -55 {
+        // recording with even one brief louder moment will have peak > -45 dBFS.
+        //
+        // v0.3.21 (P2 #5 Stage 2): tightened from -50/-55 → -45/-50 per the plan.
+        // Catches more "above-old-threshold-but-still-silent" cases (background noise,
+        // far mic) while staying conservative enough to never reject a real whisper.
+        if stats.peakDBFS < -45 && stats.meanDBFS < -50 {
             logger.info("\(logPrefix): silent recording — log-only, no user dialog")
             appState.errorService.addError(
                 source: .deepgram,
                 severity: .warning,
                 message: "No speech detected",
-                details: "Silent recording: peak=\(String(format: "%.1f", stats.peakDBFS))dBFS mean=\(String(format: "%.1f", stats.meanDBFS))dBFS duration=\(String(format: "%.1f", stats.durationSec))s"
+                details: "Silent recording: peak=\(String(format: "%.1f", stats.peakDBFS))dBFS mean=\(String(format: "%.1f", stats.meanDBFS))dBFS duration=\(String(format: "%.1f", stats.durationSec))s",
+                actionable: false, transient: true,
+                code: "deepgram.no_speech_detected"
             )
             appState.audioRecorder.cancelRecording()
             onClose()
@@ -455,12 +463,18 @@ struct RecordingPopupView: View {
             // This is the documented response for silent audio (discussions #765,
             // #713, #756). NOT a user-facing error per user directive. Log at
             // .warning severity for observability, close popup cleanly.
+            //
+            // v0.3.21 (P2 #5 Stage 2): mark transient so the Errors-tab UI folds
+            // these into a single summary row instead of showing 26 individual
+            // entries (65% of the pre-v0.3.14 visible Errors-tab volume).
             logger.info("\(logPrefix): Deepgram noSpeechDetected (duration=\(duration)s) — log-only, no user dialog")
             appState.errorService.addError(
                 source: .deepgram,
                 severity: .warning,
                 message: "No speech detected",
-                details: "Deepgram empty transcript for \(String(format: "%.1f", duration))s audio"
+                details: "Deepgram empty transcript for \(String(format: "%.1f", duration))s audio",
+                actionable: false, transient: true,
+                code: "deepgram.no_speech_detected"
             )
             onClose()
             return nil

@@ -32,6 +32,21 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.21] — 2026-05-02
+
+### Changed
+- **Tightened silent-mic preflight thresholds** (P2 #5 Stage 2) from `peak < -50 AND mean < -55` to `peak < -45 AND mean < -50`. Catches more "above-old-threshold-but-still-silent" cases (background noise, far mic) while staying conservative enough that a real whisper still passes (real speech sits at -40 to -20 dBFS per Apple Developer Forum 710820).
+- **All three "No speech detected" emission paths now mark the entry transient** (`actionable: false, transient: true, code: "deepgram.no_speech_detected"`):
+  - Client-side preflight: too short (<0.5s)
+  - Client-side preflight: silent mic (below dBFS thresholds)
+  - Deepgram server-side empty transcript (≥0.5s)
+  These collapse into a single Errors-tab summary row ("No speech detected — N times in last X, last: Y") instead of 26 individual entries (65% of the pre-v0.3.14 visible Errors-tab volume).
+
+### Notes
+- Verification: errors.json `noSpeechDetected` count over a 7-day window may stay similar — the underlying behavior is unchanged. The visible row count in the Errors tab should drop from ~26 to **1** (the summary row).
+
+---
+
 ## [0.3.20] — 2026-05-02
 
 ### Added
