@@ -32,6 +32,22 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.16] — 2026-05-02
+
+### Fixed
+- **Actor-style serialization for `AudioRecorder.warmUp()`** — eliminates the `Swift.CancellationError` cascade that dominated the audio-engine error count in Apr-May logs (14 occurrences in 11 days, 10 in a single second on Apr 30).
+  - **Root cause**: pre-v0.3.16 logic force-cancelled any in-flight warmup whenever a second `AVAudioEngineConfigurationChange` fired during the first warmup's 3-second first-buffer wait. The cancelled task threw `Swift.CancellationError` into the original caller's `await`, even though the second warmup would have produced the same engine state.
+  - **Fix**: new requests JOIN the in-flight warmup via `try await existing.value` instead of cancelling. Only one engine-creation pass runs per warmup window; all callers see the same result. `recoverEngine()` and `performEngineRestart()` retain their explicit cancel-and-retry behaviour because they intentionally start fresh after a teardown.
+  - Apple Developer Forum #772380 + WWDC 2025 #268 confirm this is the canonical Swift 6 pattern for serializing async state.
+
+### Refactored
+- Pulled the 10-second outer timeout, the success state transition, and the transient/permanent HAL classification out of `warmUp()` into a private `performGuardedWarmup()` so the join path benefits from the same protection without duplicating logic.
+
+### Notes
+- Verification: stress-test with rapid AirPods reconnects (toggle Bluetooth 5× in 30s). The `Warmup already in progress, force-cancelling old task and retrying` log line should drop to **0 occurrences** post-v0.3.16. Total audio-engine error count expected to drop ~60% (per the plan's projection).
+
+---
+
 ## [0.3.15] — 2026-05-02
 
 ### Added

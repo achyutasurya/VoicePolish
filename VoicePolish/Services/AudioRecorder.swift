@@ -139,48 +139,75 @@ final class AudioRecorder {
 
     // MARK: - Engine Lifecycle
 
-    /// Start the audio engine and install a permanent tap.
-    /// Called once at app launch and again after audio device changes.
-    /// The engine stays running — the tap discards buffers when not recording.
-    /// This is now async and thread-safe with atomic state transitions.
+    /// Action selected by the entry-time atomic state check in `warmUp()`.
+    private enum WarmupAction { case alreadyRunning, join, startNew }
+
+    /// Start the audio engine and install a permanent tap. Called once at app
+    /// launch and again after audio device changes. The engine stays running —
+    /// the tap discards buffers when not recording.
+    ///
+    /// **v0.3.16: actor-style serialization.** New requests JOIN an in-flight
+    /// warmup instead of force-cancelling it. The pre-v0.3.16 force-cancel
+    /// pattern (Apr-May logs) produced the `Swift.CancellationError` cascade
+    /// that dominated the audio-engine error count whenever a second
+    /// `AVAudioEngineConfigurationChange` notification fired during the first
+    /// warmup's 3-second first-buffer wait. `recoverEngine()` and
+    /// `performEngineRestart()` retain the cancel-and-retry behaviour because
+    /// they intentionally start fresh after a teardown.
     func warmUp() async throws {
+        let action: WarmupAction = engineState.withLock { state in
+            switch state {
+            case .running:
+                return .alreadyRunning
+            case .warmingUp:
+                return .join
+            case .stopped, .broken:
+                state = .warmingUp
+                return .startNew
+            }
+        }
+
+        switch action {
+        case .alreadyRunning:
+            return
+
+        case .join:
+            if let existing = warmupTask {
+                logger.info("warmUp() joining in-flight warmup task")
+                try await existing.value
+                return
+            }
+            // Race: state was .warmingUp but the task reference is gone.
+            // Fall through to start a fresh warmup instead of throwing.
+            fallthrough
+
+        case .startNew:
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                try await self.performGuardedWarmup()
+            }
+            warmupTask = task
+            try await task.value
+        }
+    }
+
+    /// Wraps `performWarmup()` with the 10-second outer timeout, the success
+    /// state transition, and the transient/permanent classification on failure.
+    /// Pulled out of `warmUp()` in v0.3.16 so the join path benefits from the
+    /// same protection without duplicating logic.
+    private func performGuardedWarmup() async throws {
         let startTime = CFAbsoluteTimeGetCurrent()
 
-        // Cancel existing warmup if any
-        warmupTask?.cancel()
-
-        // Atomic state check and transition (non-async to prevent actor reentrancy)
-        let wasAlreadyWarming = engineState.withLock { state -> Bool in
-            guard state != .warmingUp else {
-                logger.error("Warmup already in progress, force-cancelling old task and retrying")
-                return true
-            }
-            state = .warmingUp
-            return false
-        }
-
-        // If was already warming up, force reset and retry
-        if wasAlreadyWarming {
-            engineState.withLock { $0 = .stopped }
-            // Fall through to create a new warmup task
-        }
-
-        // Create a task for the actual warmup work (state management is below)
-        warmupTask = Task { @MainActor [weak self] in
-            try await self?.performWarmup()
-        }
-
-        // Await warmup with 10-second overall timeout.
-        // This protects against CoreAudio hanging on device graph reconfiguration
-        // (observed: AVAudioEngine()/inputNode can block for 9+ minutes).
-        let taskToAwait = warmupTask
         do {
+            // 10-second outer timeout protects against CoreAudio hangs in
+            // AVAudioEngine() / inputNode / outputFormat(), which can block
+            // for minutes during device-graph reconfiguration.
             try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    try await taskToAwait?.value
+                group.addTask { [weak self] in
+                    try await self?.performWarmup()
                 }
                 group.addTask {
-                    try await Task.sleep(nanoseconds: 10_000_000_000) // 10 seconds
+                    try await Task.sleep(nanoseconds: 10_000_000_000)
                     throw RecorderError.engineStartTimeout
                 }
                 guard let _ = try await group.next() else {
@@ -189,36 +216,24 @@ final class AudioRecorder {
                 group.cancelAll()
             }
 
-            // Warmup succeeded
             engineState.withLock { $0 = .running }
             let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
             logger.info("warmUp() completed in \(String(format: "%.1f", elapsed))ms - State: running")
         } catch {
-            // Cancel warmup task if still running (e.g., CoreAudio hung past timeout)
-            warmupTask?.cancel()
-
             if Task.isCancelled {
                 engineState.withLock { $0 = .stopped }
                 logger.info("warmUp() cancelled - State: stopped")
             } else {
-                // Transient error classification (v0.3.11).
-                // Known transient CoreAudio HAL codes (FourCC in parens):
+                // Transient HAL classification (v0.3.11) — known codes route
+                // back to `.stopped` so `recoverEngine()`'s backoff ladder can
+                // retry instead of giving up via `.broken`.
                 //   560227702  kAudioHardwareBadDeviceError         '!dev'
                 //   1937010544 kAudioHardwareNotRunningError        'stop'
                 //   560161383  kAudioHardwareIllegalOperationError  '!op '
-                // These all surface during device-graph reconfiguration races and
-                // are almost always resolved by the next retry. Plus our own
-                // RecorderError.isTransient cases (deviceNotReady, engineStartTimeout,
-                // Stale format, No audio buffers).
-                //
-                // Transient errors route to .stopped so the backoff ladder in
-                // commit v0.3.12's recoverEngine() can retry them. Only unknown/
-                // terminal errors enter .broken.
-                // Ref: https://www.osstatus.com/search/results?platform=all&framework=all&search=560227702
                 let transientHALCodes: Set<Int> = [
-                    560227702,   // kAudioHardwareBadDeviceError '!dev'
-                    1937010544,  // kAudioHardwareNotRunningError 'stop'
-                    560161383,   // kAudioHardwareIllegalOperationError '!op '
+                    560227702,
+                    1937010544,
+                    560161383,
                 ]
                 let nsError = error as NSError
                 let isTransientRecorderError = (error as? RecorderError)?.isTransient == true
