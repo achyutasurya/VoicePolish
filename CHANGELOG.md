@@ -32,6 +32,19 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.22] — 2026-05-02
+
+### Added
+- **Live mic level feedback in the recording popup** (P2 #5 Stage 3). The existing audio-level bar now turns red and shows a "Microphone appears silent — check input device" caption after 1 second of continuous silence below `audioLevel` 0.02 (≈-34 dBFS). Resets immediately when the level recovers.
+  - Addresses the underlying product UX problem behind "no speech detected" errors: pre-v0.3.22, the user couldn't tell their mic was dead until the empty transcript came back. The live indicator gives visual feedback during recording so muted-mic situations are caught before the user releases the hotkey.
+  - Implementation: `silentSinceTime`/`silentTooLong`/`silenceTimer` state machine on `RecordingPopupView`, driven by `.onChange(of: audioLevel)`. Bar fill switches between `Color.green.gradient` and `Color.red.gradient`.
+
+### Notes
+- Verification: open the recording popup, mute the system mic in System Settings → Sound. Within 1 s the bar should turn red and the warning caption appear. Unmute — bar should return to green and caption disappear immediately.
+- Expected impact (per plan verification): `noSpeechDetected` count in `errors.json` drops by ≥40% over a 7-day comparable usage window.
+
+---
+
 ## [0.3.21] — 2026-05-02
 
 ### Changed

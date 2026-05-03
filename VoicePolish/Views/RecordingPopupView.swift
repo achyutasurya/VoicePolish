@@ -77,6 +77,15 @@ struct RecordingPopupView: View {
     /// Recording is already in progress when the popup appears (started in toggleRecordingPopup).
     @State private var popupState: PopupState = .recording
 
+    /// P2 #5 Stage 3 (v0.3.22): live mic level indicator state.
+    /// Set when `audioLevel` drops below 0.02 (≈-34 dBFS); fires `silentTooLong`
+    /// after 1 s of continuous silence so the user gets immediate visual feedback
+    /// that their mic is dead before they finish a recording with no audio.
+    @State private var silentSinceTime: Date?
+    @State private var silentTooLong: Bool = false
+    @State private var silenceTimer: Timer?
+    private let silenceLevelThreshold: Float = 0.02
+
     enum PopupState: Equatable {
         case idle
         case recording
@@ -131,15 +140,27 @@ struct RecordingPopupView: View {
                 Text(formattedDuration)
                     .font(.title.monospacedDigit())
 
-                // Audio level bar
+                // Audio level bar — colour shifts to red if mic appears silent
+                // for >1 s. Addresses the underlying root cause of "no speech
+                // detected" errors: the user can't tell their mic is dead until
+                // the empty transcript comes back. (v0.3.22, P2 #5 Stage 3.)
                 GeometryReader { geometry in
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(.green.gradient)
-                        .frame(width: geometry.size.width * CGFloat(appState.audioRecorder.audioLevel))
+                        .fill(silentTooLong ? Color.red.gradient : Color.green.gradient)
+                        .frame(width: max(geometry.size.width * CGFloat(appState.audioRecorder.audioLevel), 2))
                 }
                 .frame(height: 6)
                 .background(Color.gray.opacity(0.2))
                 .clipShape(RoundedRectangle(cornerRadius: 3))
+                .onChange(of: appState.audioRecorder.audioLevel) { _, newValue in
+                    updateSilenceState(level: newValue)
+                }
+
+                if silentTooLong {
+                    Text("Microphone appears silent — check input device")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
             }
 
         case .paused:
@@ -631,6 +652,30 @@ struct RecordingPopupView: View {
             case .normal: return "stopAndSend"
             case .citrixTyping: return "stopAndCitrixSend"
             }
+        }
+    }
+
+    /// Maintains the silence detection state machine for the live mic indicator
+    /// (v0.3.22, P2 #5 Stage 3). Called from the audio-level `onChange`. After
+    /// 1 second of continuous silence below `silenceLevelThreshold`, flips
+    /// `silentTooLong` true so the bar turns red and the warning label appears.
+    /// Resets immediately when level recovers.
+    private func updateSilenceState(level: Float) {
+        if level < silenceLevelThreshold {
+            // Level still silent — start the 1s grace timer if we haven't yet.
+            if silentSinceTime == nil {
+                silentSinceTime = Date()
+                silenceTimer?.invalidate()
+                silenceTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { _ in
+                    Task { @MainActor in silentTooLong = true }
+                }
+            }
+        } else {
+            // Level recovered — clear the indicator immediately.
+            silentSinceTime = nil
+            silentTooLong = false
+            silenceTimer?.invalidate()
+            silenceTimer = nil
         }
     }
 }
