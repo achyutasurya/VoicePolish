@@ -32,6 +32,18 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.25] — 2026-05-02
+
+### Fixed
+- **Phantom `AVAudioEngineConfigurationChange` storm with AirPods (and other Bluetooth headsets).** Pre-v0.3.25, every config-change notification triggered a full engine teardown + warmup, even when nothing about the audio device had actually changed. AirPods fire these notifications every 1-3 seconds while sitting idle, so the engine was being torn down ~20× per minute and never stayed `.running` long enough for the recording popup to use it. Symptom: "I press the hotkey but recording never actually starts" (May 2 production report).
+  - **Fix**: snapshot the default input device ID + sample rate after every successful warmup. In `performEngineRestart`, if engine state is `.running` AND both still match the snapshot, log "phantom config change" and skip the restart entirely. Genuine device/rate changes still rebuild the engine; broken/stopped engines still rebuild unconditionally.
+  - This is the documented AirPods aggregate-device behaviour from Liscio's blog and Stack Overflow #63537851. The plan recommended deferring `inputNode` access to mitigate this; the dedup approach is more direct.
+
+### Notes
+- Verification: connect AirPods, open the app, leave idle for 30 s. The log should show "Skipping engine restart — phantom config change" entries instead of repeated "Old engine torn down - Starting fresh warmup" cycles. Hotkey-to-record latency should drop back to ~0ms.
+
+---
+
 ## [0.3.24] — 2026-05-02
 
 ### Added

@@ -69,6 +69,18 @@ final class AudioRecorder {
     /// not interrupt active sessions).
     private let engineMaxAge: TimeInterval = 4 * 60 * 60 // 4 hours
 
+    // MARK: - Device-change deduplication (v0.3.25)
+    //
+    // AirPods (and some other Bluetooth headsets) emit AVAudioEngineConfigurationChange
+    // notifications every 1-3 seconds even when the user isn't doing anything. Pre-v0.3.25
+    // every notification triggered a full engine teardown + warmup, so the engine never
+    // stayed running long enough for the recording popup to use it. We now compare the
+    // current default-input device ID + sample rate against the snapshot taken at last
+    // successful warmup; if both match, the notification was a phantom and we skip the
+    // restart entirely.
+    private var lastKnownInputDeviceID: AudioDeviceID?
+    private var lastKnownSampleRate: Double?
+
     // MARK: - Engine (stays running at all times)
 
     private var audioEngine: AVAudioEngine?
@@ -238,8 +250,13 @@ final class AudioRecorder {
                 logger.info("Previous engine instance lived for \(String(format: "%.0f", previousLifetimeSec / 60))m before this warmup")
             }
             engineStartedAt = Date()
+            // v0.3.25: snapshot the current input device + sample rate so
+            // `performEngineRestart` can short-circuit phantom notifications
+            // that don't actually correspond to a real device change.
+            lastKnownInputDeviceID = getDefaultInputDeviceID()
+            lastKnownSampleRate = cachedFormat?.sampleRate
             let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
-            logger.info("warmUp() completed in \(String(format: "%.1f", elapsed))ms - State: running")
+            logger.info("warmUp() completed in \(String(format: "%.1f", elapsed))ms - State: running (device=\(lastKnownInputDeviceID.map(String.init) ?? "nil") rate=\(lastKnownSampleRate.map { String(format: "%.0f", $0) } ?? "nil"))")
         } catch {
             if Task.isCancelled {
                 engineState.withLock { $0 = .stopped }
@@ -964,6 +981,25 @@ final class AudioRecorder {
         if currentState == .warmingUp {
             logger.info("Skipping engine restart — warmup already in progress")
             return
+        }
+
+        // v0.3.25: phantom-notification dedup. AirPods fire
+        // AVAudioEngineConfigurationChange every 1-3s even while idle. If the
+        // engine is healthy AND the current default input device + sample rate
+        // match the snapshot from the last successful warmup, this notification
+        // doesn't correspond to a real change — skip the restart and let the
+        // engine keep running. Only triggers for `.running` state so genuinely
+        // broken or stopped engines still rebuild.
+        if currentState == .running {
+            let currentDeviceID = getDefaultInputDeviceID()
+            let currentSampleRate = cachedFormat?.sampleRate
+            if currentDeviceID == lastKnownInputDeviceID &&
+               currentSampleRate == lastKnownSampleRate &&
+               currentDeviceID != nil {
+                logger.info("Skipping engine restart — phantom config change (device=\(currentDeviceID.map(String.init) ?? "nil") rate=\(currentSampleRate.map { String(format: "%.0f", $0) } ?? "nil") unchanged)")
+                return
+            }
+            logger.info("Engine restart needed — device or rate changed (was=\(lastKnownInputDeviceID.map(String.init) ?? "nil")@\(lastKnownSampleRate.map { String(format: "%.0f", $0) } ?? "nil"), now=\(currentDeviceID.map(String.init) ?? "nil")@\(currentSampleRate.map { String(format: "%.0f", $0) } ?? "nil"))")
         }
 
         // Cancel any ongoing warmup and wait briefly for it to wind down
