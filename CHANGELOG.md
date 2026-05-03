@@ -32,6 +32,20 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.19] — 2026-05-02
+
+### Added
+- **Soft engine recycle on long-running sessions** (P2 #3). `AudioRecorder` now stamps `engineStartedAt` on every successful warmup and throws `RecorderError.engineRecycleNeeded(ageHours:)` from `startRecording()` if the in-memory engine has been alive past `engineMaxAge` (4 hours). `VoicePolishApp.toggleRecordingPopup` catches the new error, calls the new `AudioRecorder.recycleEngine(reason:)` (full teardown + warmup), then proceeds with the recording. Invisible to active sessions; costs ~200ms cold start once every 4h.
+- **Engine lifetime instrumentation**. `performGuardedWarmup` logs the previous engine instance's lifetime in minutes whenever a warmup completes, so triage of the May 1-2 baseline elevation (errors uncorrelated with device changes) has a concrete data point. Soft recycles also surface in the Errors-tab transient summary (`audio.engine.soft_recycle`).
+
+### Fixed
+- Hypothesis from the May 1-2 baseline: cumulative resource creep / macOS state degradation in the kept-running engine. The recycle is the cheapest defense — clean teardown breaks any accumulated state without abandoning the keep-engine-running optimization for the hot path.
+
+### Notes
+- Verification: leave the app idle for 4+ hours, then trigger a recording. The popup should briefly show warmup, the Errors-tab transient summary should show "Audio engine soft-recycled (engine alive 4.x h, exceeded 4h threshold)", and recording should start cleanly.
+
+---
+
 ## [0.3.18] — 2026-05-02
 
 ### Added

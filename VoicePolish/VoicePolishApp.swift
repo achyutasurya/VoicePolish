@@ -190,6 +190,24 @@ final class AppState {
                     }
                 }
                 return
+            } catch let AudioRecorder.RecorderError.engineRecycleNeeded(ageHours) {
+                // P2 #3 (v0.3.19): engine has been alive past the 4h threshold.
+                // Soft-recycle (full teardown + warmup) before starting the recording
+                // so accumulated state doesn't carry over. Costs ~200ms of cold start.
+                logger.info("Soft engine recycle requested (alive \(String(format: "%.1f", ageHours))h)")
+                controller.showPopup(appState: self)
+                Task { @MainActor in
+                    do {
+                        try await audioRecorder.recycleEngine(reason: "engine alive \(String(format: "%.1f", ageHours))h, exceeded 4h threshold")
+                        try audioRecorder.startRecording()
+                        logger.info("Soft recycle complete, recording started")
+                    } catch {
+                        logger.error("Soft recycle failed: \(error)")
+                        errorService.addError(source: .audioRecorder, severity: .error, message: "Soft engine recycle failed", details: error.localizedDescription)
+                        controller.closePopup(appState: self)
+                    }
+                }
+                return
             } catch {
                 logger.error("Failed to start recording: \(error)")
                 errorService.addError(source: .audioRecorder, severity: .error, message: "Failed to start recording", details: error.localizedDescription)

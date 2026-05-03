@@ -57,6 +57,18 @@ final class AudioRecorder {
     /// Task tracking ongoing warmup — cancelled if a new warmup starts
     private var warmupTask: Task<Void, Error>?
 
+    // MARK: - Engine lifetime instrumentation (v0.3.19, P2 #3)
+    //
+    // Tracks how long the current engine instance has been in `.running` so we
+    // can trigger a soft recycle on long-running sessions (cumulative resource
+    // creep / macOS state degradation hypothesis from the May 1-2 baseline
+    // elevation). Set on every successful warmup; consulted by `startRecording`.
+    private var engineStartedAt: Date?
+    /// Soft-recycle threshold. Engines older than this are torn down and
+    /// re-warmed on the *next* recording attempt (invisible cold start; does
+    /// not interrupt active sessions).
+    private let engineMaxAge: TimeInterval = 4 * 60 * 60 // 4 hours
+
     // MARK: - Engine (stays running at all times)
 
     private var audioEngine: AVAudioEngine?
@@ -217,6 +229,15 @@ final class AudioRecorder {
             }
 
             engineState.withLock { $0 = .running }
+            // Engine lifetime instrumentation (v0.3.19): record start time so
+            // `startRecording()` can detect when the soft-recycle threshold is
+            // crossed. If a previous instance existed (recycle/restart path),
+            // log how long it lasted for triage of the May 2 baseline elevation.
+            if let previousStart = engineStartedAt {
+                let previousLifetimeSec = Date().timeIntervalSince(previousStart)
+                logger.info("Previous engine instance lived for \(String(format: "%.0f", previousLifetimeSec / 60))m before this warmup")
+            }
+            engineStartedAt = Date()
             let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
             logger.info("warmUp() completed in \(String(format: "%.1f", elapsed))ms - State: running")
         } catch {
@@ -593,6 +614,20 @@ final class AudioRecorder {
             throw RecorderError.engineNotReady("Engine is not ready (state: \(String(describing: engineState)))")
         }
 
+        // P2 #3 (v0.3.19): soft-recycle if engine has been alive past the threshold.
+        // Hypothesis from the May 1-2 baseline elevation (errors not correlated
+        // with device changes): cumulative resource creep in the kept-running
+        // engine. Doing a clean teardown + warmup before stale recordings start
+        // costs the user ~200ms once every 4h but eliminates accumulated state.
+        if let started = engineStartedAt,
+           Date().timeIntervalSince(started) > engineMaxAge {
+            let ageHours = Date().timeIntervalSince(started) / 3600
+            logger.info("Soft recycle threshold reached — engine alive for \(String(format: "%.1f", ageHours))h, requesting recycle before recording")
+            // Clear so we don't loop on retry — the recycle path resets it via warmUp.
+            engineStartedAt = nil
+            throw RecorderError.engineRecycleNeeded(ageHours: ageHours)
+        }
+
         // Verify engine health
         try verifyEngineHealth()
 
@@ -733,6 +768,24 @@ final class AudioRecorder {
     }
 
     // MARK: - Recovery
+
+    /// Public entry point for the soft-recycle flow (v0.3.19, P2 #3). Tears the
+    /// engine all the way down and re-warms — used when `startRecording` throws
+    /// `engineRecycleNeeded` because the in-memory engine has been alive past
+    /// `engineMaxAge`. Surfaces a transient observability entry so the recycle
+    /// frequency is visible without alarming the user.
+    func recycleEngine(reason: String = "soft recycle") async throws {
+        logger.info("recycleEngine() called - reason: \(reason)")
+        ErrorService.shared.addError(
+            source: .audioRecorder, severity: .warning,
+            message: "Audio engine soft-recycled",
+            details: reason,
+            actionable: false, transient: true,
+            code: "audio.engine.soft_recycle"
+        )
+        performFullTeardown()
+        try await warmUp()
+    }
 
     /// WhisperKit-style full teardown (v0.3.12). Takes the engine all the way
     /// back to nil so the next warmup builds from a genuinely clean graph.
@@ -1123,6 +1176,9 @@ final class AudioRecorder {
         /// (default 200ms). `coreaudiod` is presumed deadlocked — abort warmup
         /// quickly instead of letting `AVAudioEngine()` hang for minutes.
         case coreAudioStuck(String)
+        /// v0.3.19: engine has been alive past `engineMaxAge` (4h). Caller
+        /// should `recycleEngine()` then re-attempt `startRecording()`.
+        case engineRecycleNeeded(ageHours: Double)
 
         var errorDescription: String? {
             switch self {
@@ -1140,6 +1196,8 @@ final class AudioRecorder {
                 return "Default input device not ready: \(reason)"
             case .coreAudioStuck(let reason):
                 return "macOS audio system unresponsive: \(reason)"
+            case .engineRecycleNeeded(let ageHours):
+                return "Engine recycle needed (alive \(String(format: "%.1f", ageHours))h)"
             }
         }
 
