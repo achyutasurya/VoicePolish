@@ -32,6 +32,20 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.26] — 2026-05-02
+
+### Fixed
+- **Silent recordings caused by denied microphone permission now surface clearly.** Pre-v0.3.26, macOS silently fed all-zero buffers when `kTCCServiceMicrophone` was denied — recordings completed with `peak=-100 dBFS / mean=-100 dBFS` and no diagnostic anywhere (the warmup tap firing didn't tell the user the data was actually empty). The May 2 production report was exactly this: AirPods connected, engine warming up cleanly, but the mic-level bar stayed flat at zero because TCC had been reset.
+  - **`PermissionManager.checkMicrophonePermission`** now logs the explicit status (`AUTHORIZED` / `NOT_DETERMINED` / `DENIED` / `RESTRICTED`) and, when denied or restricted, emits an actionable Errors-tab entry with concrete instructions: "Open System Settings → Privacy & Security → Microphone and enable VoicePolish, then restart the app."
+  - On `NOT_DETERMINED` → triggers the system prompt and logs the result.
+  - Codes: `permission.microphone_denied`, `permission.microphone_restricted`.
+- **Accessibility permission status** is now logged at startup as well (was silent before).
+
+### Notes
+- Verification: `tccutil reset Microphone com.voicepolish.app`, restart the app — should see "Microphone permission: NOT_DETERMINED — requesting via system prompt", system dialog appears, grant → "Microphone permission request result: GRANTED" follows. Tap the recording hotkey, mic-level bar should respond to your voice.
+
+---
+
 ## [0.3.25] — 2026-05-02
 
 ### Fixed
