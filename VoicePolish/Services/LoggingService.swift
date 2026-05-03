@@ -16,6 +16,40 @@ final class LoggingService: @unchecked Sendable {
             at: logDirectoryURL,
             withIntermediateDirectories: true
         )
+
+        // P2 cross-cutting C (v0.3.24): rotate logs older than 90 days at app
+        // start. Pre-v0.3.24 the only retention was macOS's own (none); older
+        // files appeared to be cleared eventually by the OS, leaving us with
+        // only ~11 days of historical comparison data. 90 days lets us compare
+        // current error rate against the previous month's baseline.
+        cleanupOldLogs(olderThanDays: 90)
+    }
+
+    /// Deletes `voicepolish-*.log` files in `logDirectoryURL` whose
+    /// modification date is older than `olderThanDays`. Runs at init on the
+    /// MainActor (cheap directory scan, normally <50 files).
+    private func cleanupOldLogs(olderThanDays: Int) {
+        let cutoff = Date().addingTimeInterval(-Double(olderThanDays) * 24 * 60 * 60)
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: logDirectoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return }
+
+        var deletedCount = 0
+        for url in files where url.pathExtension == "log" {
+            guard
+                let attrs = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+                let mtime = attrs.contentModificationDate,
+                mtime < cutoff
+            else { continue }
+            if (try? FileManager.default.removeItem(at: url)) != nil {
+                deletedCount += 1
+            }
+        }
+
+        if deletedCount > 0 {
+            info("Log retention: deleted \(deletedCount) log file(s) older than \(olderThanDays) days")
+        }
     }
 
     func info(_ message: String) {

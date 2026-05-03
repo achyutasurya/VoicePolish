@@ -32,6 +32,17 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.24] — 2026-05-02
+
+### Added
+- **90-day log retention** (P2 cross-cutting C). `LoggingService.cleanupOldLogs(olderThanDays:)` runs at app init and deletes `voicepolish-*.log` files in `~/Library/Logs/VoicePolish/` whose mtime is older than 90 days. Pre-v0.3.24 the only retention was macOS's own (none observed), leaving us with only ~11 days of historical comparison data. 90 days lets us compare the current error rate against the previous month's baseline.
+- **Metrics rollup footer in the Errors tab.** Derived live from `HistoryService` (success count) and `ErrorService` (actionable + transient counts) for the active time filter — no separate `metrics.json` needed. Shows: `N recordings · M actionable · K transient · X% success` (success rate green ≥95%, orange below).
+
+### Notes
+- Final commit in the post-hardening observability pass (v0.3.14 → v0.3.24). Next version bump to **0.4.0** when shipping to production SaaS per the plan's verification gate. Plan file: `~/.claude/plans/there-are-quite-a-abstract-peach.md`.
+
+---
+
 ## [0.3.23] — 2026-05-02
 
 ### Added

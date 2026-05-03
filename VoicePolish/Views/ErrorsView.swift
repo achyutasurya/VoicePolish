@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ErrorsView: View {
     let errorService = ErrorService.shared
+    let historyService = HistoryService.shared
 
     @State private var timeFilter: HistoryTimeFilter = .last24Hours
     @State private var currentPage: Int = 1
@@ -16,6 +17,21 @@ struct ErrorsView: View {
 
     private var actionable: [ErrorEntry] { split.actionable }
     private var transientGroups: [TransientGroup] { split.transientGroups }
+    private var transientCountInWindow: Int {
+        transientGroups.reduce(0) { $0 + $1.count }
+    }
+    /// Successful pipeline runs in the same time window. Used to derive the
+    /// success-rate footer (v0.3.24, P2 cross-cutting C metrics rollup).
+    private var successfulRecordingsInWindow: Int {
+        historyService.getEntries(filter: timeFilter).count
+    }
+    private var totalEventsInWindow: Int {
+        successfulRecordingsInWindow + actionable.count + transientCountInWindow
+    }
+    private var successRatePercent: Int {
+        guard totalEventsInWindow > 0 else { return 100 }
+        return Int(round(Double(successfulRecordingsInWindow) / Double(totalEventsInWindow) * 100))
+    }
 
     private var totalPages: Int {
         max(1, Int(ceil(Double(actionable.count) / Double(itemsPerPage))))
@@ -23,10 +39,6 @@ struct ErrorsView: View {
 
     private var pageEntries: [ErrorEntry] {
         Array(actionable.dropFirst((currentPage - 1) * itemsPerPage).prefix(itemsPerPage))
-    }
-
-    private var transientCount: Int {
-        transientGroups.reduce(0) { $0 + $1.count }
     }
 
     var body: some View {
@@ -107,12 +119,28 @@ struct ErrorsView: View {
                         if !transientGroups.isEmpty {
                             TransientSummaryBlock(
                                 groups: transientGroups,
-                                totalCount: transientCount,
+                                totalCount: transientCountInWindow,
                                 expanded: $showTransient
                             )
                         }
                     }
                 }
+            }
+
+            // P2 cross-cutting C (v0.3.24): metrics rollup footer.
+            // Derived live from HistoryService + ErrorService for the active
+            // time filter — no separate metrics.json needed.
+            if totalEventsInWindow > 0 {
+                HStack(spacing: 12) {
+                    Label("\(successfulRecordingsInWindow) recordings", systemImage: "waveform")
+                    Label("\(actionable.count) actionable", systemImage: "exclamationmark.triangle")
+                    Label("\(transientCountInWindow) transient", systemImage: "arrow.triangle.2.circlepath")
+                    Spacer()
+                    Text("\(successRatePercent)% success")
+                        .foregroundColor(successRatePercent >= 95 ? .green : .orange)
+                }
+                .font(.caption2)
+                .foregroundColor(.secondary)
             }
 
             // Pagination
