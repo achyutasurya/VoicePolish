@@ -32,6 +32,20 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.20] — 2026-05-02
+
+### Added
+- **Expanded HAL transient whitelist** (P2 #6). Two additional CoreAudio HAL error codes now route to the recovery backoff ladder instead of `.broken`:
+  - `kAudioHardwareUnspecifiedError` (`'what'`, 2003329396) — generic, often resolves on retry per the CoreAudio header reference.
+  - `kAudioDeviceUnsupportedFormatError` (`'!dat'`, 560226676) — handled via the fresh format query in the next warmup attempt (the v0.3.10 stale-format reconciliation does the renegotiation automatically).
+- **Symbolic constants** replace the hardcoded 560227702/1937010544/560161383 literals so the whitelist is maintainable.
+- **`AudioRecorder.fourCharCodeString(_:)` helper** renders an OSStatus code as its FourCharCode representation (e.g. `560227702` → `'!dev'`). Unknown HAL codes that fall through the whitelist are now logged with their FourCC so future field data can identify additional transient candidates and graduate them to the whitelist.
+
+### Notes
+- Codes that remain *permanent* (NOT in the whitelist): `kAudioHardwareBadObjectError` (invalid reference), `kAudioDevicePermissionsError` (requires user intervention).
+
+---
+
 ## [0.3.19] — 2026-05-02
 
 ### Added

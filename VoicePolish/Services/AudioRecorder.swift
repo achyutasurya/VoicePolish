@@ -245,16 +245,16 @@ final class AudioRecorder {
                 engineState.withLock { $0 = .stopped }
                 logger.info("warmUp() cancelled - State: stopped")
             } else {
-                // Transient HAL classification (v0.3.11) — known codes route
-                // back to `.stopped` so `recoverEngine()`'s backoff ladder can
-                // retry instead of giving up via `.broken`.
-                //   560227702  kAudioHardwareBadDeviceError         '!dev'
-                //   1937010544 kAudioHardwareNotRunningError        'stop'
-                //   560161383  kAudioHardwareIllegalOperationError  '!op '
+                // Transient HAL classification (v0.3.11, expanded v0.3.20) —
+                // known codes route back to `.stopped` so `recoverEngine()`'s
+                // backoff ladder can retry instead of giving up via `.broken`.
+                // Uses symbolic CoreAudio constants for maintainability.
                 let transientHALCodes: Set<Int> = [
-                    560227702,
-                    1937010544,
-                    560161383,
+                    Int(kAudioHardwareBadDeviceError),         // '!dev' 560227702
+                    Int(kAudioHardwareNotRunningError),        // 'stop' 1937010544
+                    Int(kAudioHardwareIllegalOperationError),  // '!op ' 560161383
+                    Int(kAudioHardwareUnspecifiedError),       // 'what' 2003329396 — generic, often resolves on retry (v0.3.20)
+                    Int(kAudioDeviceUnsupportedFormatError),   // '!dat'  560226676 — format renegotiation via fresh query in next warmup (v0.3.20)
                 ]
                 let nsError = error as NSError
                 let isTransientRecorderError = (error as? RecorderError)?.isTransient == true
@@ -262,10 +262,13 @@ final class AudioRecorder {
 
                 if isTransientRecorderError || isTransientHALCode {
                     engineState.withLock { $0 = .stopped }
-                    logger.info("warmUp() hit transient condition (code=\(nsError.code)) - State: stopped (retryable via ladder)")
+                    logger.info("warmUp() hit transient condition (code=\(nsError.code) \(AudioRecorder.fourCharCodeString(nsError.code))) - State: stopped (retryable via ladder)")
                 } else {
                     engineState.withLock { $0 = .broken }
-                    logger.error("warmUp() failed - State: broken - Error: \(error.localizedDescription)")
+                    // v0.3.20: log FourCharCode form of unknown HAL codes so future
+                    // field data can identify additional transient candidates.
+                    let fourCC = AudioRecorder.fourCharCodeString(nsError.code)
+                    logger.error("warmUp() failed - State: broken - code=\(nsError.code) \(fourCC) - Error: \(error.localizedDescription)")
                 }
             }
             throw error
@@ -993,6 +996,23 @@ final class AudioRecorder {
         }
     }
 
+
+    /// Render an `OSStatus`/HAL code as its FourCharCode representation
+    /// (e.g. `560227702` → `'!dev'`). Added in v0.3.20 so unknown codes that
+    /// fall through the transient whitelist are easy to identify in logs and
+    /// graduate to the whitelist later. Non-printable bytes render as `?`.
+    nonisolated static func fourCharCodeString(_ code: Int) -> String {
+        let bytes: [UInt8] = [
+            UInt8((code >> 24) & 0xFF),
+            UInt8((code >> 16) & 0xFF),
+            UInt8((code >> 8) & 0xFF),
+            UInt8(code & 0xFF),
+        ]
+        let chars = bytes.map { byte -> String in
+            (byte >= 32 && byte < 127) ? String(UnicodeScalar(byte)) : "?"
+        }
+        return "'\(chars.joined())'"
+    }
 
     nonisolated static func calculateLevel(buffer: AVAudioPCMBuffer) -> Float {
         guard let channelData = buffer.floatChannelData?[0] else { return 0 }
