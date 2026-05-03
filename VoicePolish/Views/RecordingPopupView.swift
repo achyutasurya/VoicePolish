@@ -561,29 +561,50 @@ struct RecordingPopupView: View {
         logger.info("\(logPrefix): closing popup...")
         onClose()
 
-        // Deactivate VoicePolish so it gives up being the active app
-        NSApp.deactivate()
-
-        // Re-activate the target app
+        // P1 #7: cooperative activation (macOS 14+).
+        //
+        // Pre-v0.3.17 used `NSApp.deactivate()` + `targetApp.activate()`. The
+        // panel uses `.nonActivatingPanel` so VoicePolish never *had* focus to
+        // deactivate — `deactivate()` was effectively noise that opened a race
+        // window where notifications / `CoreServicesUIAgent` / Spotlight could
+        // grab focus before our `activate()` landed (observed May 2: focus
+        // went to Chrome instead of VS Code).
+        //
+        // `NSApp.yieldActivation(to:)` is the canonical macOS 14+ replacement
+        // (Apple's "Passing control from one app to another with cooperative
+        // activation" guide). `target.activate()` then completes the hand-off.
+        // Ref: https://developer.apple.com/documentation/appkit/passing-control-from-one-app-to-another-with-cooperative-activation
         if let targetApp {
-            logger.info("\(logPrefix): activating \(targetApp.localizedName ?? "unknown") (pid: \(targetApp.processIdentifier))...")
+            logger.info("\(logPrefix): yielding activation to \(targetApp.localizedName ?? "unknown") (\(targetApp.bundleIdentifier ?? "nil") pid: \(targetApp.processIdentifier))...")
+            NSApp.yieldActivation(to: targetApp)
             targetApp.activate()
         }
 
         // Wait for focus transfer — 500ms to be safe
         try? await Task.sleep(nanoseconds: 500_000_000)
 
-        // Log which app is now frontmost after activation
+        // Log which app is now frontmost after activation (with bundle ID so
+        // post-incident analysis can identify focus-stealing offenders).
         let frontApp = NSWorkspace.shared.frontmostApplication
-        logger.info("\(logPrefix): frontmost app after activation: \(frontApp?.localizedName ?? "nil") (pid: \(frontApp?.processIdentifier ?? 0))")
+        logger.info("\(logPrefix): frontmost app after activation: \(frontApp?.localizedName ?? "nil") (\(frontApp?.bundleIdentifier ?? "nil") pid: \(frontApp?.processIdentifier ?? 0))")
 
         // Verify the correct app got focus
         if let targetApp, frontApp?.processIdentifier != targetApp.processIdentifier {
-            logger.error("\(logPrefix): WARNING - focus went to \(frontApp?.localizedName ?? "nil") instead of \(targetApp.localizedName ?? "nil"). Retrying activation...")
+            logger.error("\(logPrefix): WARNING - focus went to \(frontApp?.localizedName ?? "nil") (\(frontApp?.bundleIdentifier ?? "nil")) instead of \(targetApp.localizedName ?? "nil") (\(targetApp.bundleIdentifier ?? "nil")). Retrying activation...")
+            // P0 #4: surface as transient observability so the noise floor of
+            // focus-steal incidents is visible (driven by macOS, not our code).
+            appState.errorService.addError(
+                source: .textInsertion, severity: .warning,
+                message: "Focus stolen by \(frontApp?.localizedName ?? "another app")",
+                details: "Wanted \(targetApp.bundleIdentifier ?? targetApp.localizedName ?? "target"); got \(frontApp?.bundleIdentifier ?? frontApp?.localizedName ?? "nil"). Retrying.",
+                actionable: false, transient: true,
+                code: "focus.stolen_by_third_app"
+            )
+            NSApp.yieldActivation(to: targetApp)
             targetApp.activate()
             try? await Task.sleep(nanoseconds: 300_000_000)
             let retryFront = NSWorkspace.shared.frontmostApplication
-            logger.info("\(logPrefix): after retry, frontmost is: \(retryFront?.localizedName ?? "nil") (pid: \(retryFront?.processIdentifier ?? 0))")
+            logger.info("\(logPrefix): after retry, frontmost is: \(retryFront?.localizedName ?? "nil") (\(retryFront?.bundleIdentifier ?? "nil") pid: \(retryFront?.processIdentifier ?? 0))")
         }
     }
 

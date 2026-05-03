@@ -60,7 +60,13 @@ final class TextInsertionService {
 
         // 5. Wait for paste to complete. App behavior varies, so allow generous time.
         // The defer block above guarantees clipboard restoration regardless of how we exit.
-        try await Task.sleep(nanoseconds: 200_000_000) // 200ms
+        //
+        // v0.3.17: bumped 200ms → 500ms. Industry consensus (Igor Kulman, Multi.app)
+        // is that 200ms is too short for Electron-based apps (Slack, Discord, the
+        // VS Code Electron host) which need closer to 400-500ms to consume the
+        // pasteboard. The user doesn't perceive the extra 300ms; the gain is that
+        // clipboard restore no longer races the target app's paste handler.
+        try await Task.sleep(nanoseconds: 500_000_000) // 500ms
     }
 
     /// Insert text by typing characters as keyboard events.

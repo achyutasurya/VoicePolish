@@ -32,6 +32,21 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.17] — 2026-05-02
+
+### Changed
+- **Cooperative activation (macOS 14+) for target-app focus restoration.** Replaced `NSApp.deactivate()` + `targetApp.activate()` with `NSApp.yieldActivation(to: targetApp)` + `targetApp.activate()`. The popup uses `.nonActivatingPanel` so VoicePolish never *had* focus to deactivate — `deactivate()` was opening a race window where `CoreServicesUIAgent` / Spotlight / notifications could grab focus before our `activate()` landed (observed May 2: focus went to Chrome instead of VS Code). `yieldActivation(to:)` is the canonical replacement per Apple's cooperative-activation guide.
+- **Post-paste clipboard-restore wait bumped 200ms → 500ms.** Industry consensus (Igor Kulman, Multi.app) is that 200ms is too short for Electron-based apps (Slack, Discord, the VS Code Electron host); 500ms gives the target's paste handler time to consume the pasteboard before we restore the user's previous clipboard contents.
+- **Bundle-ID logging** in focus restoration logs (`localizedName (bundle.id pid:N)`) so post-incident analysis can identify focus-stealing offenders.
+
+### Added
+- **Transient `focus.stolen_by_third_app` warning** emitted when the wrong app gets focus on first activation. Surfaces in the Errors-tab transient summary so the noise floor of macOS focus-steal incidents (driven by the OS, not our code — Apple has no `ForegroundLockTimeout` equivalent) is visible without nagging the user.
+
+### Notes
+- Verification: paste into VS Code, Chrome, Slack, Discord, Notion, Terminal in sequence with no manual focus. 100% paste success rate expected; "focus went to wrong app" warnings should drop to near zero.
+
+---
+
 ## [0.3.16] — 2026-05-02
 
 ### Fixed
