@@ -352,6 +352,14 @@ struct SettingsView: View {
                         .font(.subheadline.bold())
                     KeyboardShortcuts.Recorder("", name: .cancelRecording)
                 }
+                HStack {
+                    Text("Stop & Type Hotkey:")
+                        .font(.subheadline.bold())
+                    KeyboardShortcuts.Recorder("", name: .stopAndType)
+                }
+                Text("Stops recording and types the result character-by-character (works in Citrix / virtual desktops where paste is blocked). Does nothing if no recording is in progress.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
 
                 Divider()
 

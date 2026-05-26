@@ -113,6 +113,12 @@ struct RecordingPopupView: View {
                 Task { await stopAndSend() }
             }
         }
+        .onChange(of: appState.shouldStopAndType) { _, newValue in
+            if newValue {
+                appState.shouldStopAndType = false
+                Task { await stopAndCitrixSend() }
+            }
+        }
     }
 
     @ViewBuilder

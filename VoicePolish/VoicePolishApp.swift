@@ -31,6 +31,9 @@ final class AppState {
     /// Set to `true` by the hotkey handler to tell the popup view to trigger stopAndSend.
     var shouldStopAndSend = false
 
+    /// Set to `true` by the stop-and-type hotkey to tell the popup view to trigger stopAndCitrixSend.
+    var shouldStopAndType = false
+
     private var configChangeObserver: NSObjectProtocol?
 
     init() {
@@ -39,6 +42,9 @@ final class AppState {
         }
         KeyboardShortcuts.onKeyDown(for: .cancelRecording) { [weak self] in
             self?.cancelRecordingFromHotkey()
+        }
+        KeyboardShortcuts.onKeyDown(for: .stopAndType) { [weak self] in
+            self?.stopAndTypeFromHotkey()
         }
         permissionManager.checkAndRequestPermissions()
         logger.info("VoicePolish started")
@@ -105,6 +111,16 @@ final class AppState {
         logger.info("Cancel hotkey pressed — cancelling recording")
         audioRecorder.cancelRecording()
         controller.closePopup(appState: self)
+    }
+
+    func stopAndTypeFromHotkey() {
+        let controller = RecordingPopupController.shared
+        guard controller.isShowing,
+              audioRecorder.state == .recording || audioRecorder.state == .paused else {
+            return
+        }
+        logger.info("Stop-and-type hotkey pressed — triggering stopAndCitrixSend")
+        shouldStopAndType = true
     }
 
     func toggleRecordingPopup() {

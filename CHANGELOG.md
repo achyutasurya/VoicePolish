@@ -32,6 +32,14 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.27] — 2026-05-26
+
+### Added
+- **Global "Stop & Type" hotkey (default: Option+.).** Pressing it during a recording stops the pipeline and delivers the LLM result by typing it character-by-character via `TextInsertionService.typeTextForCitrix`, instead of the clipboard-paste path used by Cmd+]. This is the same delivery mode previously available only through the "Stop & Type" button in the popup — now reachable without leaving the focused text field. Intended for Citrix Receiver, virtual-desktop windows, and web apps that suppress Cmd+V.
+  - Pure stop-only hotkey: does nothing when no recording is active (recording must still be started with Cmd+]).
+  - Configurable in Settings → Recording / Cancel / Stop & Type hotkey rows.
+  - No clipboard exposure: the typing path never writes the LLM output to the system pasteboard.
+
 ## [0.3.26] — 2026-05-02
 
 ### Fixed
