@@ -32,6 +32,12 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.28] — 2026-06-09
+
+### Fixed
+- **Clicking the menubar icon no longer crashes the app.** Since the SwiftPM-built binary's generated `Bundle.module` accessor looks for resource bundles at `Bundle.main.bundleURL.appendingPathComponent("<name>.bundle")` — i.e. next to `Contents/`, not inside `Contents/Resources/` — the `build.sh` step that copied `KeyboardShortcuts_KeyboardShortcuts.bundle` into `Contents/Resources/` caused `Bundle.module` to `fatalError("could not load resource bundle: ...")` the first time any package code reached for resources. That happened the moment SwiftUI built the first `KeyboardShortcuts.Recorder` view in `SettingsView`, so opening the menubar popover terminated the app with `EXC_BREAKPOINT` before any UI rendered. Recording itself was unaffected because `KeyboardShortcuts.onKeyDown` (used to register the global hotkey) never touches `Bundle.module`.
+  - **`build.sh`** now copies SwiftPM `.bundle` outputs to the .app root (next to `Contents/`) so they land at the path `Bundle.module` actually probes.
+
 ## [0.3.27] — 2026-05-26
 
 ### Added
