@@ -52,6 +52,14 @@ final class AppState {
         // Monitor for audio engine configuration changes and recover proactively
         registerConfigChangeObserver()
 
+        // v0.3.30: prune archived recordings on launch so the retention policy (default
+        // 7-day age-out) reclaims disk even when no new recording happens this session.
+        Task { @MainActor in
+            let liveIDs = Set(HistoryService.shared.entries.map(\.id))
+            await AudioStorageService.shared.prune(policy: AppSettings.shared.audioRetentionPolicy,
+                                                   liveEntryIDs: liveIDs)
+        }
+
         // Warm up audio engine asynchronously so first recording is instant.
         // The engine stays running (discarding buffers) until a recording starts.
         Task { @MainActor [weak self] in

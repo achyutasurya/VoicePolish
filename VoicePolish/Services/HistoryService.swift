@@ -23,22 +23,65 @@ final class HistoryService {
     // MARK: - Public API
 
     @discardableResult
-    func addEntry(transcript: String, llmResponse: String? = nil) -> UUID {
-        let entry = HistoryEntry(transcript: transcript, llmResponse: llmResponse)
+    func addEntry(id: UUID = UUID(), transcript: String, llmResponse: String? = nil,
+                  audioFileName: String? = nil, status: HistoryEntry.Status = .success,
+                  failureStage: HistoryEntry.FailureStage? = nil, errorMessage: String? = nil) -> UUID {
+        let entry = HistoryEntry(id: id, transcript: transcript, llmResponse: llmResponse,
+                                 audioFileName: audioFileName, status: status,
+                                 failureStage: failureStage, errorMessage: errorMessage)
         entries.insert(entry, at: 0)
         saveToDisk()
-        logger.info("History: saved entry (\(transcript.count) transcript chars, \(llmResponse?.count ?? 0) response chars)")
-        return entry.id
+        logger.info("History: saved \(status.rawValue) entry \(id) (\(transcript.count) transcript chars, \(llmResponse?.count ?? 0) response chars)")
+        return id
     }
 
-    func updateEntry(id: UUID, llmResponse: String) {
+    /// In-place mutation helper: find by id, apply the change, persist.
+    private func mutate(id: UUID, _ body: (inout HistoryEntry) -> Void) {
         guard let index = entries.firstIndex(where: { $0.id == id }) else {
             logger.error("History: cannot update entry \(id) — not found")
             return
         }
-        entries[index].llmResponse = llmResponse
+        body(&entries[index])
         saveToDisk()
+    }
+
+    /// LLM succeeded after a transcript-only entry: attach the response, ensure success.
+    func updateEntry(id: UUID, llmResponse: String) {
+        mutate(id: id) {
+            $0.llmResponse = llmResponse
+            $0.status = .success
+            $0.failureStage = nil
+            $0.errorMessage = nil
+        }
         logger.info("History: updated entry \(id) with LLM response (\(llmResponse.count) chars)")
+    }
+
+    /// A retry re-ran successfully: overwrite transcript/response and clear the failure.
+    func applyRetrySuccess(id: UUID, transcript: String, llmResponse: String?) {
+        mutate(id: id) {
+            $0.transcript = transcript
+            $0.llmResponse = llmResponse
+            $0.status = .success
+            $0.failureStage = nil
+            $0.errorMessage = nil
+        }
+        logger.info("History: retry succeeded for entry \(id)")
+    }
+
+    /// Mark an entry failed at a given stage (transcription or LLM), with a reason.
+    func markFailed(id: UUID, stage: HistoryEntry.FailureStage, errorMessage: String) {
+        mutate(id: id) {
+            $0.status = .failed
+            $0.failureStage = stage
+            $0.errorMessage = errorMessage
+        }
+        logger.info("History: marked entry \(id) failed (\(stage.rawValue))")
+    }
+
+    /// Drop an entry's archived audio (e.g. a success under the failures-only save scope).
+    func clearAudio(id: UUID) {
+        mutate(id: id) { $0.audioFileName = nil }
+        Task { await AudioStorageService.shared.delete(for: id) }
     }
 
     func getEntries(filter: HistoryTimeFilter) -> [HistoryEntry] {
@@ -46,10 +89,19 @@ final class HistoryService {
         return entries.filter { $0.timestamp >= cutoff }
     }
 
+    /// Delete a single entry and its archived audio.
+    func deleteEntry(id: UUID) {
+        entries.removeAll { $0.id == id }
+        saveToDisk()
+        Task { await AudioStorageService.shared.delete(for: id) }
+        logger.info("History: deleted entry \(id) + audio")
+    }
+
     func clearAll() {
         entries.removeAll()
         saveToDisk()
-        logger.info("History: cleared all entries")
+        Task { await AudioStorageService.shared.deleteAll() }
+        logger.info("History: cleared all entries + audio")
     }
 
     // MARK: - Disk I/O

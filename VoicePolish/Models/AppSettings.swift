@@ -155,6 +155,54 @@ final class AppSettings {
         set { UserDefaults.standard.set(newValue, forKey: "sendToLLMEnabled") }
     }
 
+    // MARK: - Recordings Archive (v0.3.30)
+
+    /// Master switch for archiving recorded audio to disk (default on).
+    var audioArchivalEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "audioArchivalEnabled") == nil { return true }
+            return UserDefaults.standard.bool(forKey: "audioArchivalEnabled")
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "audioArchivalEnabled") }
+    }
+
+    /// Save scope: true = archive both successful AND failed recordings (default);
+    /// false = keep audio only for failures (the Retry-from-history use-case).
+    var archiveSuccessfulRecordings: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "archiveSuccessfulRecordings") == nil { return true }
+            return UserDefaults.standard.bool(forKey: "archiveSuccessfulRecordings")
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "archiveSuccessfulRecordings") }
+    }
+
+    /// Audio retention policy, stored as a mode string + value int (UserDefaults can't
+    /// hold an associated-value enum). Default: 7-day age-out (history *text* is kept
+    /// forever; only the WAV files are pruned).
+    var audioRetentionPolicy: AudioRetentionPolicy {
+        get {
+            let mode = UserDefaults.standard.string(forKey: "audioRetentionMode") ?? "maxAgeDays"
+            let value = UserDefaults.standard.object(forKey: "audioRetentionValue") as? Int ?? 7
+            switch mode {
+            case "keepAll": return .keepAll
+            case "lastN": return .lastN(max(1, value))
+            default: return .maxAgeDays(max(1, value))
+            }
+        }
+        set {
+            switch newValue {
+            case .keepAll:
+                UserDefaults.standard.set("keepAll", forKey: "audioRetentionMode")
+            case .lastN(let n):
+                UserDefaults.standard.set("lastN", forKey: "audioRetentionMode")
+                UserDefaults.standard.set(n, forKey: "audioRetentionValue")
+            case .maxAgeDays(let d):
+                UserDefaults.standard.set("maxAgeDays", forKey: "audioRetentionMode")
+                UserDefaults.standard.set(d, forKey: "audioRetentionValue")
+            }
+        }
+    }
+
     var openRouterAPIKey: String {
         get { UserDefaults.standard.string(forKey: "openRouterAPIKey") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "openRouterAPIKey") }

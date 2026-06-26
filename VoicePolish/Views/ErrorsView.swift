@@ -23,7 +23,9 @@ struct ErrorsView: View {
     /// Successful pipeline runs in the same time window. Used to derive the
     /// success-rate footer (v0.3.24, P2 cross-cutting C metrics rollup).
     private var successfulRecordingsInWindow: Int {
-        historyService.getEntries(filter: timeFilter).count
+        // v0.3.30: failed recordings are now history entries too — count only successes
+        // so the success-rate footer isn't inflated.
+        historyService.getEntries(filter: timeFilter).filter { $0.status == .success }.count
     }
     private var totalEventsInWindow: Int {
         successfulRecordingsInWindow + actionable.count + transientCountInWindow

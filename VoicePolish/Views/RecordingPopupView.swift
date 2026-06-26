@@ -549,6 +549,16 @@ struct RecordingPopupView: View {
         logger.pipelineStep("audio capture", duration: CFAbsoluteTimeGetCurrent() - audioStart)
         logger.info("\(logPrefix): got \(wavData.count) bytes of audio")
 
+        // 2a. Archive the WAV up-front (v0.3.30), keyed by a freshly-minted entry id, so a
+        // transcription/LLM failure can be retried from saved audio. Failure can't be
+        // predicted, so we always archive when the master toggle is on and reconcile the
+        // save scope on success (finalizeAudioAfterSuccess). A save failure (disk full) is
+        // non-fatal: archivedName stays nil → the entry simply isn't retryable.
+        let entryId = UUID()
+        let archivedName: String? = appState.settings.audioArchivalEnabled
+            ? await AudioStorageService.shared.save(wavData, for: entryId)
+            : nil
+
         // 3. Transcribe with Deepgram
         let transcript: String
         do {
@@ -581,6 +591,8 @@ struct RecordingPopupView: View {
                 actionable: false, transient: true,
                 code: "deepgram.no_speech_detected"
             )
+            // No-speech is not retryable — drop the just-archived audio, create no entry.
+            await AudioStorageService.shared.delete(for: entryId)
             onClose()
             return nil
         } catch DeepgramService.DeepgramError.transcriptionFailed(let requestId) {
@@ -596,6 +608,11 @@ struct RecordingPopupView: View {
                 requestId: requestId,
                 code: "deepgram.transcription_failed"
             )
+            // v0.3.30: record a retryable failed entry (audio retained) for Retry-from-history.
+            appState.historyService.addEntry(id: entryId, transcript: "", audioFileName: archivedName,
+                                             status: .failed, failureStage: .transcription,
+                                             errorMessage: "Transcription failed. Please try again.")
+            await pruneAudio()
             popupState = .error("Transcription failed. Please try again.")
             return nil
         } catch {
@@ -603,6 +620,7 @@ struct RecordingPopupView: View {
             // cancellation as a clean abort — no error entry, no error popup, no paste.
             if error is CancellationError || (error as? URLError)?.code == .cancelled {
                 logger.info("\(logPrefix): transcription cancelled by user — clean abort")
+                await AudioStorageService.shared.delete(for: entryId)   // orphan, no entry created
                 return nil
             }
             // P0 cross-cutting A: capture dg-request-id so the user can paste it
@@ -617,12 +635,21 @@ struct RecordingPopupView: View {
                 requestId: requestId,
                 code: "deepgram.transcription_error"
             )
+            // v0.3.30: record a retryable failed entry (audio retained) so the user can
+            // Retry from history instead of re-recording.
+            appState.historyService.addEntry(id: entryId, transcript: "", audioFileName: archivedName,
+                                             status: .failed, failureStage: .transcription,
+                                             errorMessage: error.localizedDescription)
+            await pruneAudio()
             popupState = .error("Transcription failed: \(error.localizedDescription)")
             return nil
         }
 
-        // 3a. Save transcript to history immediately (progressive save)
-        let entryId = appState.historyService.addEntry(transcript: transcript)
+        // 3a. Save transcript to history immediately (progressive save), using the
+        // pre-minted id so the entry links to the archived audio. (v0.3.30)
+        appState.historyService.addEntry(id: entryId, transcript: transcript,
+                                         audioFileName: archivedName, status: .success)
+        await pruneAudio()
         logger.info("\(logPrefix): saved transcript to history (entry: \(entryId))")
 
         // 4. Process with LLM (if enabled)
@@ -643,13 +670,17 @@ struct RecordingPopupView: View {
 
                 // Update the same history entry with LLM response
                 appState.historyService.updateEntry(id: entryId, llmResponse: responseText)
+                await finalizeAudioAfterSuccess(entryId)
 
                 logger.pipelineStep("total pipeline", duration: CFAbsoluteTimeGetCurrent() - pipelineStart)
                 return responseText
             } catch {
                 // v0.3.30: cancellation (user dismissed mid-processing) is a clean abort.
+                // The transcript already succeeded and is saved as a success entry; honor
+                // the save scope for its audio, then bail without surfacing an error.
                 if error is CancellationError || (error as? URLError)?.code == .cancelled {
                     logger.info("\(logPrefix): LLM processing cancelled by user — clean abort")
+                    await finalizeAudioAfterSuccess(entryId)
                     return nil
                 }
                 // P0 cross-cutting A: capture X-Generation-Id so the user can paste it
@@ -664,14 +695,33 @@ struct RecordingPopupView: View {
                     requestId: requestId,
                     code: "openrouter.llm_failed"
                 )
+                // v0.3.30: downgrade the (already-saved) entry to an LLM failure and keep
+                // its audio so the user can Retry just the LLM step from history.
+                appState.historyService.markFailed(id: entryId, stage: .llm,
+                                                   errorMessage: error.localizedDescription)
                 popupState = .error("LLM processing failed: \(error.localizedDescription)")
-                // Transcript is already saved to history
                 return nil
             }
         } else {
             logger.info("\(logPrefix): LLM disabled, using raw transcript")
+            await finalizeAudioAfterSuccess(entryId)
             logger.pipelineStep("total pipeline (no LLM)", duration: CFAbsoluteTimeGetCurrent() - pipelineStart)
             return transcript
+        }
+    }
+
+    /// Prune archived audio after a new entry is registered, bounding disk per the policy.
+    private func pruneAudio() async {
+        let liveIDs = Set(appState.historyService.entries.map(\.id))
+        await AudioStorageService.shared.prune(policy: appState.settings.audioRetentionPolicy,
+                                               liveEntryIDs: liveIDs)
+    }
+
+    /// On a successful outcome, honor the save scope: under "failures only" drop the WAV
+    /// (a success doesn't need it). Audio for successes is otherwise retained.
+    private func finalizeAudioAfterSuccess(_ id: UUID) async {
+        if !appState.settings.archiveSuccessfulRecordings {
+            appState.historyService.clearAudio(id: id)
         }
     }
 

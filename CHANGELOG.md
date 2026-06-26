@@ -41,6 +41,11 @@ Claude Code can update the `VERSION` file and this changelog when asked.
   - Normal **Stop & Paste** / **Stop & Type** are unaffected: the popup-close that happens *inside* normal delivery deliberately does not cancel (only user-initiated dismissals do, via the window delegate's `windowShouldClose`).
   - A double-trigger guard prevents a second tap (e.g. Stop & Paste then Stop & Type) from spawning a second, un-cancellable pipeline.
 
+### Added
+- **Recordings are now archived to disk, and failed recordings appear in History.** Every real recording's WAV is saved to `~/Library/Application Support/VoicePolish/recordings/<id>.wav` as a separate file (kept out of `history.json`, which stays small). Transcription and LLM failures now create a History entry — previously they left only a transient error and the audio was discarded, so a failed dictation was lost.
+  - Storage is governed by settings (defaults applied this release; UI lands with Retry): a master archive toggle (on), save scope (both success & failure), and a retention policy (delete audio older than **7 days**; history *text* is kept forever). Audio is pruned on launch and after each recording, and an orphan-sweep removes any WAV with no matching entry.
+  - Silent / too-short / no-speech recordings are not archived and create no entry (nothing to retry). The Errors-tab success-rate metric now counts only successful entries so it isn't skewed by the new failed entries.
+
 ## [0.3.28] — 2026-06-09
 
 ### Fixed
