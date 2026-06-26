@@ -253,6 +253,20 @@ struct SettingsView: View {
     @State private var selectedTab: SettingsTab = .settings
     @State private var sendToLLMEnabled: Bool = true
 
+    // Recordings Archive (v0.3.30) — mirrored from settings in onAppear because
+    // @Observable does not track UserDefaults-backed computed properties.
+    @State private var audioArchivalEnabled: Bool = true
+    @State private var archiveSuccessfulRecordings: Bool = true
+    @State private var retentionIndex: Int = 0
+
+    private let retentionChoices: [(label: String, policy: AudioRetentionPolicy)] = [
+        ("7 days", .maxAgeDays(7)),
+        ("30 days", .maxAgeDays(30)),
+        ("Last 50 recordings", .lastN(50)),
+        ("Last 200 recordings", .lastN(200)),
+        ("Keep all", .keepAll),
+    ]
+
     private enum SettingsTab {
         case settings
         case history
@@ -301,7 +315,7 @@ struct SettingsView: View {
             case .settings:
                 settingsContent
             case .history:
-                HistoryView()
+                HistoryView(appState: appState)
             case .errors:
                 ErrorsView()
             }
@@ -310,6 +324,9 @@ struct SettingsView: View {
         .onAppear {
             temperatureValue = appState.settings.temperature
             sendToLLMEnabled = appState.settings.sendToLLMEnabled
+            audioArchivalEnabled = appState.settings.audioArchivalEnabled
+            archiveSuccessfulRecordings = appState.settings.archiveSuccessfulRecordings
+            retentionIndex = retentionChoices.firstIndex { $0.policy == appState.settings.audioRetentionPolicy } ?? 0
         }
     }
 
@@ -455,6 +472,45 @@ struct SettingsView: View {
 
                 // MARK: - Citrix Typing Preset
                 CitrixTypingPresetPickerView(appState: appState)
+
+                Divider()
+
+                // MARK: - Recordings Archive
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Recordings Archive")
+                        .font(.subheadline.bold())
+
+                    Toggle("Save recording audio (enables Retry on failed transcriptions)",
+                           isOn: $audioArchivalEnabled)
+                        .onChange(of: audioArchivalEnabled) { _, v in
+                            appState.settings.audioArchivalEnabled = v
+                        }
+
+                    Group {
+                        Picker("Save audio for", selection: $archiveSuccessfulRecordings) {
+                            Text("All recordings").tag(true)
+                            Text("Failed only").tag(false)
+                        }
+                        .onChange(of: archiveSuccessfulRecordings) { _, v in
+                            appState.settings.archiveSuccessfulRecordings = v
+                        }
+
+                        Picker("Keep audio", selection: $retentionIndex) {
+                            ForEach(retentionChoices.indices, id: \.self) { i in
+                                Text(retentionChoices[i].label).tag(i)
+                            }
+                        }
+                        .onChange(of: retentionIndex) { _, i in
+                            appState.settings.audioRetentionPolicy = retentionChoices[i].policy
+                        }
+
+                        Text("Audio is stored locally in Application Support and pruned automatically. History text is always kept.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .disabled(!audioArchivalEnabled)
+                    .opacity(audioArchivalEnabled ? 1 : 0.5)
+                }
 
                 Divider()
 

@@ -135,6 +135,86 @@ final class AppState {
         shouldStopAndType = true
     }
 
+    // MARK: - Retry from history (v0.3.30)
+
+    /// The history entry currently being retried (drives the card's spinner). nil = idle.
+    var retryingEntryId: UUID? = nil
+    private var retryTask: Task<Void, Never>?
+
+    func cancelRetry() { retryTask?.cancel() }
+
+    /// Re-run a failed history entry from its saved audio (transcription failure) or re-run
+    /// only the LLM (LLM failure), updating the entry in place. No paste — the user copies
+    /// the result from History (delivery = update-entry-only). Single-flight.
+    func retryHistoryEntry(id: UUID) {
+        guard retryingEntryId == nil,
+              let entry = historyService.entries.first(where: { $0.id == id }) else { return }
+        retryingEntryId = id
+        retryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.retryingEntryId = nil }
+            await self.runRetry(entry: entry)
+        }
+    }
+
+    private func runRetry(entry: HistoryEntry) async {
+        let id = entry.id
+        // Track where we are so a failure is labelled correctly (transcription vs LLM).
+        var stage: HistoryEntry.FailureStage = entry.failureStage ?? .transcription
+        do {
+            // 1. Obtain the transcript: reuse it for an LLM-stage failure, otherwise
+            //    re-transcribe from the saved audio.
+            let transcript: String
+            if stage == .llm, !entry.transcript.isEmpty {
+                transcript = entry.transcript
+            } else {
+                stage = .transcription
+                guard let wav = await AudioStorageService.shared.load(for: id) else {
+                    historyService.markFailed(id: id, stage: .transcription,
+                                              errorMessage: "Audio no longer available")
+                    return
+                }
+                transcript = try await deepgramService.transcribeAudio(
+                    wavData: wav,
+                    apiKey: settings.deepgramAPIKey,
+                    model: settings.deepgramModel,
+                    keyterms: settings.deepgramKeyterms,
+                    vocabularyEnabled: settings.deepgramVocabularyEnabled
+                )
+                // Progressive save (mirrors the main pipeline): persist the fresh transcript
+                // BEFORE the LLM step so an LLM failure can't discard it or mislabel the entry.
+                historyService.updateTranscript(id: id, transcript: transcript)
+            }
+
+            // 2. LLM (if enabled).
+            var llmResponse: String? = nil
+            if settings.sendToLLMEnabled {
+                stage = .llm
+                llmResponse = try await openRouterService.processText(
+                    transcript: transcript,
+                    systemPrompt: settings.systemPrompt,
+                    model: settings.selectedModel,
+                    apiKey: settings.openRouterAPIKey,
+                    temperature: settings.temperature
+                )
+            }
+
+            if Task.isCancelled { return }  // leave the entry failed; no partial write
+
+            // 3. Success: update the entry in place and honor the save scope.
+            historyService.applyRetrySuccess(id: id, transcript: transcript, llmResponse: llmResponse)
+            if !settings.archiveSuccessfulRecordings { historyService.clearAudio(id: id) }
+            logger.info("Retry succeeded for history entry \(id)")
+        } catch {
+            if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                logger.info("Retry cancelled for history entry \(id)")
+                return  // entry stays failed, no new error surfaced
+            }
+            logger.error("Retry failed for history entry \(id): \(error)")
+            historyService.markFailed(id: id, stage: stage, errorMessage: error.localizedDescription)
+        }
+    }
+
     func toggleRecordingPopup() {
         let controller = RecordingPopupController.shared
         if controller.isShowing {

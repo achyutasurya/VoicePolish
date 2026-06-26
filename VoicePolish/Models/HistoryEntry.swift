@@ -42,8 +42,12 @@ struct HistoryEntry: Identifiable, Codable {
         transcript = try c.decode(String.self, forKey: .transcript)
         llmResponse = try c.decodeIfPresent(String.self, forKey: .llmResponse)
         audioFileName = try c.decodeIfPresent(String.self, forKey: .audioFileName)
-        status = try c.decodeIfPresent(Status.self, forKey: .status) ?? .success
-        failureStage = try c.decodeIfPresent(FailureStage.self, forKey: .failureStage)
+        // Decode the enums from their raw string so an unknown value written by a FUTURE
+        // version degrades to a sensible default instead of throwing and failing the whole
+        // history.json load (which would wipe the in-memory list).
+        status = Status(rawValue: try c.decodeIfPresent(String.self, forKey: .status) ?? "") ?? .success
+        failureStage = (try c.decodeIfPresent(String.self, forKey: .failureStage))
+            .flatMap(FailureStage.init(rawValue:))
         errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
     }
 }

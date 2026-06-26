@@ -68,6 +68,12 @@ final class HistoryService {
         logger.info("History: retry succeeded for entry \(id)")
     }
 
+    /// Persist a re-transcription mid-retry (keeps the entry's current failed status) so a
+    /// subsequent LLM failure can't discard the freshly obtained transcript.
+    func updateTranscript(id: UUID, transcript: String) {
+        mutate(id: id) { $0.transcript = transcript }
+    }
+
     /// Mark an entry failed at a given stage (transcription or LLM), with a reason.
     func markFailed(id: UUID, stage: HistoryEntry.FailureStage, errorMessage: String) {
         mutate(id: id) {

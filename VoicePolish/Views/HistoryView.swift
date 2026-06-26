@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct HistoryView: View {
-    let historyService = HistoryService.shared
+    @Bindable var appState: AppState
+    private var historyService: HistoryService { appState.historyService }
 
     @State private var timeFilter: HistoryTimeFilter = .last24Hours
     @State private var currentPage: Int = 1
@@ -112,7 +113,7 @@ struct HistoryView: View {
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(pageEntries) { entry in
-                            HistoryEntryCard(entry: entry)
+                            HistoryEntryCard(entry: entry, appState: appState)
                         }
                     }
                 }
@@ -150,10 +151,14 @@ struct HistoryView: View {
         }
         .padding()
         .frame(maxWidth: 520)
+        // Keep currentPage valid after deletes shrink the list.
+        .onChange(of: historyService.entries.count) { _, _ in
+            if currentPage > totalPages { currentPage = totalPages }
+        }
     }
 
     private func copyAllTranscripts() {
-        let text = filtered.map { $0.transcript }.joined(separator: "\n\n")
+        let text = filtered.map { $0.transcript }.filter { !$0.isEmpty }.joined(separator: "\n\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
@@ -167,13 +172,36 @@ struct HistoryView: View {
 
 struct HistoryEntryCard: View {
     let entry: HistoryEntry
+    @Bindable var appState: AppState
+    @State private var showDeleteConfirm = false
+
+    private var isRetrying: Bool { appState.retryingEntryId == entry.id }
+
+    /// A retry is running on a different entry (retries are single-flight app-wide).
+    private var otherRetryInFlight: Bool {
+        appState.retryingEntryId != nil && appState.retryingEntryId != entry.id
+    }
+
+    /// Retry is possible when failed AND we can recover input: saved audio exists, or it
+    /// was an LLM-stage failure and we still have the transcript.
+    private var canRetry: Bool {
+        entry.status == .failed &&
+        (AudioStorageService.shared.exists(for: entry.id) ||
+         (entry.failureStage == .llm && !entry.transcript.isEmpty))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Timestamp + copy buttons
-            HStack {
+            // Header: timestamp + status + actions
+            HStack(spacing: 6) {
                 Text(entry.timestamp, style: .date)
                 Text(entry.timestamp, style: .time)
+                if entry.status == .failed {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                    Text(entry.failureStage == .llm ? "LLM failed" : "Transcription failed")
+                        .foregroundColor(.red)
+                }
                 Spacer()
                 Button {
                     copyToClipboard(entry.transcript)
@@ -182,6 +210,7 @@ struct HistoryEntryCard: View {
                 }
                 .help("Copy transcript")
                 .buttonStyle(.borderless)
+                .disabled(entry.transcript.isEmpty)
 
                 Button {
                     copyToClipboard(entry.llmResponse ?? "")
@@ -191,53 +220,27 @@ struct HistoryEntryCard: View {
                 .help("Copy LLM response")
                 .buttonStyle(.borderless)
                 .disabled(entry.llmResponse == nil || entry.llmResponse?.isEmpty == true)
+
+                if showDeleteConfirm {
+                    Button("Delete?") { performDelete() }
+                        .font(.caption.bold()).foregroundColor(.red).buttonStyle(.borderless)
+                    Button("No") { showDeleteConfirm = false }
+                        .buttonStyle(.borderless)
+                } else {
+                    Button { showDeleteConfirm = true } label: {
+                        Image(systemName: "trash")
+                    }
+                    .help("Delete entry and its audio")
+                    .buttonStyle(.borderless)
+                }
             }
             .font(.caption)
             .foregroundColor(.secondary)
 
-            // Side-by-side: transcript | LLM output
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Transcript")
-                        .font(.caption2.bold())
-                        .foregroundColor(.secondary)
-                    Text(entry.transcript)
-                        .font(.caption)
-                        .lineLimit(4)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(6)
-                .background(Color.gray.opacity(0.08))
-                .cornerRadius(4)
-
-                if let llmResponse = entry.llmResponse, !llmResponse.isEmpty {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("LLM Output")
-                            .font(.caption2.bold())
-                            .foregroundColor(.secondary)
-                        Text(llmResponse)
-                            .font(.caption)
-                            .lineLimit(4)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(6)
-                    .background(Color.blue.opacity(0.06))
-                    .cornerRadius(4)
-                } else {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Transcript Only")
-                            .font(.caption2.bold())
-                            .foregroundColor(.secondary)
-                        Text("No LLM processing")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .italic()
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(6)
-                    .background(Color.gray.opacity(0.04))
-                    .cornerRadius(4)
-                }
+            if entry.status == .failed {
+                failedBody
+            } else {
+                successBody
             }
         }
         .padding(8)
@@ -245,8 +248,108 @@ struct HistoryEntryCard: View {
         .cornerRadius(8)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                .stroke(entry.status == .failed ? Color.red.opacity(0.3) : Color.gray.opacity(0.2),
+                        lineWidth: 1)
         )
+    }
+
+    @ViewBuilder
+    private var failedBody: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let msg = entry.errorMessage, !msg.isEmpty {
+                Text(msg)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // LLM-stage failures still have a transcript worth showing.
+            if !entry.transcript.isEmpty {
+                Text(entry.transcript)
+                    .font(.caption)
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .background(Color.gray.opacity(0.08))
+                    .cornerRadius(4)
+            }
+            HStack(spacing: 8) {
+                if isRetrying {
+                    ProgressView().controlSize(.small)
+                    Text("Retrying…").font(.caption).foregroundColor(.secondary)
+                    Spacer()
+                    Button("Cancel") { appState.cancelRetry() }
+                        .font(.caption)
+                } else {
+                    Button {
+                        appState.retryHistoryEntry(id: entry.id)
+                    } label: {
+                        Label("Retry", systemImage: "arrow.clockwise").font(.caption)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canRetry || otherRetryInFlight)
+
+                    if !canRetry {
+                        Text("Audio no longer available")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var successBody: some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Transcript")
+                    .font(.caption2.bold())
+                    .foregroundColor(.secondary)
+                Text(entry.transcript)
+                    .font(.caption)
+                    .lineLimit(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(6)
+            .background(Color.gray.opacity(0.08))
+            .cornerRadius(4)
+
+            if let llmResponse = entry.llmResponse, !llmResponse.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("LLM Output")
+                        .font(.caption2.bold())
+                        .foregroundColor(.secondary)
+                    Text(llmResponse)
+                        .font(.caption)
+                        .lineLimit(4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(6)
+                .background(Color.blue.opacity(0.06))
+                .cornerRadius(4)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Transcript Only")
+                        .font(.caption2.bold())
+                        .foregroundColor(.secondary)
+                    Text("No LLM processing")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .italic()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(6)
+                .background(Color.gray.opacity(0.04))
+                .cornerRadius(4)
+            }
+        }
+    }
+
+    private func performDelete() {
+        showDeleteConfirm = false
+        if appState.retryingEntryId == entry.id { appState.cancelRetry() }
+        appState.historyService.deleteEntry(id: entry.id)
     }
 
     private func copyToClipboard(_ text: String) {
