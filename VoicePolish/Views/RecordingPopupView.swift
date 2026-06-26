@@ -4,7 +4,7 @@ import AppKit
 // MARK: - NSPanel Controller
 
 @MainActor
-final class RecordingPopupController {
+final class RecordingPopupController: NSObject, NSWindowDelegate {
     static let shared = RecordingPopupController()
 
     private var panel: NSPanel?
@@ -12,7 +12,23 @@ final class RecordingPopupController {
     /// Only set once per popup lifecycle to prevent race conditions.
     var previousApp: NSRunningApplication?
 
+    /// The in-flight transcription→LLM→deliver pipeline, retained so a user dismiss can
+    /// cancel it. Without this the unstructured Task kept running after the popup closed
+    /// and could "ghost-paste" the result into whatever app was focused later (v0.3.30).
+    /// IMPORTANT: only user-dismiss paths (hotkeys, title-bar ✕) cancel this — the internal
+    /// `closePopup` during normal delivery must NOT, or Stop & Paste/Type would break.
+    var pipelineTask: Task<Void, Never>?
+
+    /// Weak ref used by the window-delegate dismiss path (title-bar ✕) to cancel the
+    /// in-flight recording/pipeline.
+    private weak var appState: AppState?
+
     var isShowing: Bool { panel != nil }
+
+    override init() { super.init() }
+
+    /// Cancel the in-flight pipeline (transcription/LLM). Safe to call when nil/finished.
+    func cancelPipeline() { pipelineTask?.cancel() }
 
     func showPopup(appState: AppState) {
         // Guard against race: if popup is already showing, do not overwrite previousApp
@@ -52,18 +68,46 @@ final class RecordingPopupController {
             }
         )
         panel.contentView = hostingView
+        panel.delegate = self
         panel.orderFrontRegardless()
 
+        self.appState = appState
         self.panel = panel
     }
 
+    /// Programmatic close (in-app Cancel buttons, hotkeys, end of delivery). Triggers
+    /// `windowWillClose` for cleanup. Does NOT cancel the pipeline — normal delivery calls
+    /// this from inside the running pipeline task right before pasting, so cancelling here
+    /// would suppress the paste. User-initiated cancellation lives in the hotkey handlers
+    /// and `windowShouldClose`.
     func closePopup(appState: AppState) {
-        guard let panel else { return }
-        let frame = panel.frame
-        appState.settings.popupX = frame.origin.x
-        appState.settings.popupY = frame.origin.y
+        panel?.close()
+    }
 
-        panel.close()
+    // MARK: - NSWindowDelegate
+
+    /// Fires ONLY for user-initiated closes (title-bar ✕ / performClose:), never for a
+    /// programmatic `panel.close()`. So this is the correct place to treat a title-bar
+    /// dismiss as a cancel — closing the ghost-paste hole that an uncancelled ✕ during
+    /// transcription would otherwise leave open.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if let appState {
+            if appState.audioRecorder.state == .recording || appState.audioRecorder.state == .paused {
+                appState.audioRecorder.cancelRecording()
+            }
+        }
+        cancelPipeline()
+        return true
+    }
+
+    /// Single cleanup chokepoint for BOTH the user ✕ and programmatic close: persist the
+    /// popup position and drop the panel reference so `isShowing` resets.
+    func windowWillClose(_ notification: Notification) {
+        if let panel, let appState {
+            let frame = panel.frame
+            appState.settings.popupX = frame.origin.x
+            appState.settings.popupY = frame.origin.y
+        }
         self.panel = nil
     }
 }
@@ -110,13 +154,13 @@ struct RecordingPopupView: View {
         .onChange(of: appState.shouldStopAndSend) { _, newValue in
             if newValue {
                 appState.shouldStopAndSend = false
-                Task { await stopAndSend() }
+                RecordingPopupController.shared.pipelineTask = Task { await stopAndSend() }
             }
         }
         .onChange(of: appState.shouldStopAndType) { _, newValue in
             if newValue {
                 appState.shouldStopAndType = false
-                Task { await stopAndCitrixSend() }
+                RecordingPopupController.shared.pipelineTask = Task { await stopAndCitrixSend() }
             }
         }
     }
@@ -255,13 +299,13 @@ struct RecordingPopupView: View {
                 }
                 .tint(.red)
 
-                Button(action: { Task { await stopAndSend() } }) {
+                Button(action: { RecordingPopupController.shared.pipelineTask = Task { await stopAndSend() } }) {
                     Label("Stop & Paste", systemImage: "arrow.up.circle.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.blue)
 
-                Button(action: { Task { await stopAndCitrixSend() } }) {
+                Button(action: { RecordingPopupController.shared.pipelineTask = Task { await stopAndCitrixSend() } }) {
                     Label("Stop & Type", systemImage: "keyboard")
                 }
                 .buttonStyle(.borderedProminent)
@@ -278,20 +322,28 @@ struct RecordingPopupView: View {
                 }
                 .tint(.red)
 
-                Button(action: { Task { await stopAndSend() } }) {
+                Button(action: { RecordingPopupController.shared.pipelineTask = Task { await stopAndSend() } }) {
                     Label("Stop & Paste", systemImage: "arrow.up.circle.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.blue)
 
-                Button(action: { Task { await stopAndCitrixSend() } }) {
+                Button(action: { RecordingPopupController.shared.pipelineTask = Task { await stopAndCitrixSend() } }) {
                     Label("Stop & Type", systemImage: "keyboard")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.orange)
 
             case .transcribing, .processing:
-                EmptyView()
+                // Visible cancel during the (potentially long, esp. with network retries)
+                // transcription/LLM phase — same effect as Cmd+[ or the title-bar ✕.
+                Button(action: {
+                    RecordingPopupController.shared.cancelPipeline()
+                    onClose()
+                }) {
+                    Label("Cancel", systemImage: "xmark")
+                }
+                .tint(.red)
 
             case .done:
                 EmptyView()
@@ -379,11 +431,37 @@ struct RecordingPopupView: View {
         let logger = appState.logger
         let logPrefix = mode.logPrefix
 
+        // Double-trigger guard (v0.3.30): a delivery only starts from .recording/.paused.
+        // Flip to .transcribing *synchronously* (before the first await) so a second
+        // trigger — e.g. tapping Stop & Paste then Stop & Type before the controls swap to
+        // EmptyView — is ignored here instead of spawning a second, un-cancellable pipeline
+        // that could double-paste. The MainActor runs each task's synchronous prefix to
+        // completion, so the second task sees .transcribing and returns.
+        guard popupState == .recording || popupState == .paused else {
+            logger.info("\(logPrefix): ignoring duplicate stop trigger (state=\(String(describing: popupState)))")
+            return
+        }
+        popupState = .transcribing
+
         guard let responseText = await prepareFinalText(logPrefix: logPrefix) else {
             return
         }
 
+        // v0.3.30: if the user dismissed the popup (cancelled the pipeline) while we were
+        // transcribing/processing, do NOT paste — that would "ghost-paste" into whatever
+        // app is now focused.
+        if Task.isCancelled {
+            logger.info("\(logPrefix): pipeline cancelled before delivery — skipping paste")
+            return
+        }
+
         await focusTargetApp(logPrefix: logPrefix)
+
+        // Re-check after the focus hand-off wait (cancellation may have arrived during it).
+        if Task.isCancelled {
+            logger.info("\(logPrefix): pipeline cancelled during focus hand-off — skipping paste")
+            return
+        }
 
         do {
             switch mode {
@@ -521,6 +599,12 @@ struct RecordingPopupView: View {
             popupState = .error("Transcription failed. Please try again.")
             return nil
         } catch {
+            // v0.3.30: a user dismiss mid-transcription cancels this pipeline. Treat
+            // cancellation as a clean abort — no error entry, no error popup, no paste.
+            if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                logger.info("\(logPrefix): transcription cancelled by user — clean abort")
+                return nil
+            }
             // P0 cross-cutting A: capture dg-request-id so the user can paste it
             // into a Deepgram support ticket.
             let requestId = (error as? DeepgramService.DeepgramError)?.requestId
@@ -563,6 +647,11 @@ struct RecordingPopupView: View {
                 logger.pipelineStep("total pipeline", duration: CFAbsoluteTimeGetCurrent() - pipelineStart)
                 return responseText
             } catch {
+                // v0.3.30: cancellation (user dismissed mid-processing) is a clean abort.
+                if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    logger.info("\(logPrefix): LLM processing cancelled by user — clean abort")
+                    return nil
+                }
                 // P0 cross-cutting A: capture X-Generation-Id so the user can paste it
                 // into an OpenRouter support ticket.
                 let requestId = (error as? OpenRouterService.OpenRouterError)?.requestId

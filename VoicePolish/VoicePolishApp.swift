@@ -104,12 +104,16 @@ final class AppState {
 
     func cancelRecordingFromHotkey() {
         let controller = RecordingPopupController.shared
-        guard controller.isShowing,
-              audioRecorder.state == .recording || audioRecorder.state == .paused else {
-            return
+        guard controller.isShowing else { return }
+        if audioRecorder.state == .recording || audioRecorder.state == .paused {
+            logger.info("Cancel hotkey pressed — cancelling recording")
+            audioRecorder.cancelRecording()
+        } else {
+            // Popup is up but recording already stopped (transcribing/processing): Cmd+[
+            // now cancels the in-flight pipeline too, so a dismissed run never ghost-pastes.
+            logger.info("Cancel hotkey pressed — cancelling in-flight transcription pipeline")
         }
-        logger.info("Cancel hotkey pressed — cancelling recording")
-        audioRecorder.cancelRecording()
+        controller.cancelPipeline()
         controller.closePopup(appState: self)
     }
 
@@ -131,7 +135,9 @@ final class AppState {
                 logger.info("Hotkey pressed while recording — triggering stopAndSend")
                 shouldStopAndSend = true
             } else {
-                // Not recording (idle, transcribing, etc.) — just close
+                // Not recording (idle, transcribing, etc.) — cancel any in-flight pipeline
+                // so a dismissed transcription never ghost-pastes, then close.
+                controller.cancelPipeline()
                 controller.closePopup(appState: self)
             }
         } else {

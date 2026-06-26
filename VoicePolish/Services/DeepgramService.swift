@@ -111,13 +111,44 @@ actor DeepgramService {
         let retryableStatusCodes: Set<Int> = [408, 429, 500, 502, 503, 504]
         let maxRetries = 3
 
+        // Transport-level failures (TLS handshake, request timeout, dropped/lost
+        // connection, transient "offline") are *thrown* by URLSession rather than
+        // surfaced as an HTTP status, so they bypassed the status-code retry below
+        // entirely — a single transient blip lost the whole recording and showed the
+        // user a hard "Transcription failed". These are routine on Citrix/VPN/proxy
+        // networks and almost always succeed on an immediate retry. v0.3.29: feed the
+        // transient URLError codes through the same exponential-backoff loop. A
+        // non-retryable URLError, or one on the final attempt, still propagates to the
+        // caller's catch unchanged, preserving the existing user-facing error path.
+        let retryableURLErrorCodes: Set<URLError.Code> = [
+            .secureConnectionFailed,  // -1200  "A TLS error caused the secure connection to fail."
+            .timedOut,                // -1001  "The request timed out."
+            .networkConnectionLost,   // -1005  "The network connection was lost."
+            .cannotConnectToHost,     // -1004
+            .cannotFindHost,          // -1003
+            .dnsLookupFailed,         // -1006
+            .notConnectedToInternet   // -1009  "The Internet connection appears to be offline."
+        ]
+
         var data = Data()
         var httpResponse: HTTPURLResponse?
         var rtt: TimeInterval = 0
 
         for attempt in 0...maxRetries {
             let startTime = CFAbsoluteTimeGetCurrent()
-            let (responseData, urlResponse) = try await URLSession.shared.data(for: request)
+
+            let responseData: Data
+            let urlResponse: URLResponse
+            do {
+                (responseData, urlResponse) = try await URLSession.shared.data(for: request)
+            } catch let urlError as URLError where retryableURLErrorCodes.contains(urlError.code) && attempt < maxRetries {
+                let exponentialBase = pow(2.0, Double(attempt))  // 1s, 2s, 4s
+                let jitter = Double.random(in: 0...1.0)
+                let delay = min(exponentialBase + jitter, 32.0)
+                logger.info("[Deepgram] transport error \(urlError.code.rawValue) (\(urlError.localizedDescription)) — retrying in \(String(format: "%.2f", delay))s (attempt \(attempt + 1)/\(maxRetries))")
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                continue
+            }
             rtt = CFAbsoluteTimeGetCurrent() - startTime
 
             guard let resp = urlResponse as? HTTPURLResponse else {

@@ -32,6 +32,15 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.30] — 2026-06-26
+
+### Fixed
+- **Transient network failures during transcription now retry instead of dropping the recording.** Transport-level errors thrown by `URLSession` — TLS handshake failures (`-1200` / SSL `-9820`), request timeouts (`-1001`), dropped connections (`-1005`), and transient "offline" states (`-1009`) — were thrown straight out of `DeepgramService.transcribeAudio`, bypassing the retry loop (which only handled HTTP status codes 408/429/5xx). A single momentary blip — routine on Citrix/VPN/proxy networks — surfaced as a hard "Transcription failed" dialog and lost the entire recording. Every recent "Transcription failed" entry in the error log was one of these transport errors.
+  - The `URLSession` call is now wrapped so a retryable `URLError` feeds through the same exponential-backoff-with-jitter loop already used for HTTP 5xx (up to 3 retries: ~1s, 2s, 4s + jitter, capped at 32s). A non-retryable `URLError`, or one on the final attempt, still propagates to the caller unchanged, preserving the existing user-facing error path and Deepgram `request_id` capture.
+- **Dismissing the recording popup mid-transcription no longer pastes into the wrong app ("ghost paste").** The transcription → LLM → deliver pipeline now runs as a single cancellable task owned by the popup controller. Pressing the cancel hotkey (Cmd+\[ — which now also works during Transcribing/Processing, not just while recording), the toggle hotkey, the title-bar ✕, or the new in-popup **Cancel** button aborts the in-flight Deepgram/LLM request. Cancellation is treated as a clean abort — no error entry, no error dialog — and delivery is skipped, so a late-arriving success never types into whatever app is now focused.
+  - Normal **Stop & Paste** / **Stop & Type** are unaffected: the popup-close that happens *inside* normal delivery deliberately does not cancel (only user-initiated dismissals do, via the window delegate's `windowShouldClose`).
+  - A double-trigger guard prevents a second tap (e.g. Stop & Paste then Stop & Type) from spawning a second, un-cancellable pipeline.
+
 ## [0.3.28] — 2026-06-09
 
 ### Fixed
