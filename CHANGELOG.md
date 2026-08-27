@@ -32,6 +32,63 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.32] — 2026-08-27
+
+### Fixed
+Fourteen defects found by an adversarial audit of the 0.3.31 keystroke path. None is a regression to a previously-working path — the Cmd+V paste path, recording pipeline, history and retry were all confirmed intact — but several were silently wrong in ways the original verification could not see.
+
+- **The punctuation fold could turn typable text into spaces on 43 keyboard layouts.** It checked whether the *source* character needed Option, but never whether the *replacement* was reachable. On U.S. International the curly apostrophe is directly typable while the straight one is a **dead key**, so folding `’` to `'` produced a character the emitter could not type — which then arrived as a space, along with a spurious "characters could not be typed" warning. Invisible on a U.S. layout, which is why it shipped. A new layout-independent assertion now runs the fold against every installed keyboard layout and asserts it never emits an untypable character; with the old code restored, that assertion fails 43 of 308 checks.
+- **Cancelling a run could desync a modifier key the user was physically holding.** `unwind()` asked `CGEventSource.keyState` which modifiers were down and released everything it found — but that reports the combined state of all *hardware* sources, i.e. the user's fingers. Pressing **Cmd+[** to abort meant `unwind()` saw Command down and posted a synthetic Command key-up, so the system believed Command was released while it was still held. This fired on the designed abort path, every time. The drain is now scoped to modifiers this run actually pressed; since typing only ever presses Shift and Option, Command and Control can no longer be touched.
+- **The wrong global hotkey was suppressed during a run.** The code disabled `.toggleRecording` (Cmd+], which our typing can never produce) while leaving `.stopAndType` registered — whose default Option+`.` *is* the character `≥`. Carbon hot keys consume the event, so a matching character would silently vanish from the output with no diagnostic. Both are now disabled; `.cancelRecording` stays live as the abort path.
+- **Character events advertised the modifiers we wanted, not the ones actually held.** If a modifier press failed to post, the bookkeeping was correct but the character event still carried the flag — telling a scancode client about an Alt that was never pressed.
+- **A stuck character key was cleared without being released.** The key-up retry swallowed event-creation failure and cleared the pending key regardless, so the one case where a key genuinely remains down was the one that gave up silently. It now retries, and reports a still-stuck key.
+- **The stuck-modifier warning was unreachable.** `defer { emitter.unwind() }` runs *after* the return value is assembled, so the report always carried an empty set. The probe passed only because it called `unwind()` first — the test and production disagreed about ordering. The engine now unwinds explicitly before building the report, and `unwind()` is idempotent so the `defer` remains a valid backstop.
+- **The delivery check was built on a counter that does not count our events.** Measured on macOS 26: posting 10 key-downs moved `CGEventSourceCounterForEventType` by **0** on both `.hidSystemState` and `.combinedSessionState`, while an event tap confirmed all 10 were emitted — so the red "No keystrokes were delivered" error could have fired on every successful run. Delivery is now judged from `AXIsProcessTrusted()` and `IsSecureEventInputEnabled()`, which are reliable; the counts remain as a log line.
+- **The menubar typing indicator never changed.** `TextInsertionService` was not `@Observable`, so SwiftUI never invalidated the scene — the only feedback available during a run did not work.
+- **The modifier drain ran on every quit**, not only quits during a run, so quitting while holding a modifier desynced it. It is now gated on a run being in flight and touches only Shift and Option.
+- **Cmd+[ could be hijacked from a new recording** started during a long typing run, leaving that recording running and its popup open.
+- Zero-width and soft-hyphen characters reported as typed despite posting nothing; they are now a distinct `.deleted` outcome and are not counted.
+- `forceReleaseModifiers` never set `event.flags` (so events advertised the very modifier they were releasing) and posted only left-hand key codes, so a latched right Option never cleared.
+- `KeyboardLayoutMap.build()` overwrote the input source with a failed fallback, reporting "no keyboard layout" for a layout that merely lacked Unicode data.
+- **Fold and emitter could disagree about the layout.** If the map build failed in the service but succeeded in the engine, a run typed with real keystrokes and **no fold applied** — the worst available combination. The service is now the single decision point and passes its snapshot through.
+
+### Notes
+- "Simplify punctuation" OFF continues to mean *type exactly what the LLM wrote*, Option keystrokes included — correct for Citrix, which reads the Unicode payload. Only the comment that overclaimed otherwise changed.
+- The offline probe grew from 42 to 308 assertions, most of that being the fold invariant across every installed keyboard layout.
+
+---
+
+## [0.3.31] — 2026-08-27
+
+### Fixed
+- **Stop & Type now works in Microsoft Windows App (and every other scan-code remote-desktop client).** Every character arrived as the letter `a`. The typing path posted `CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(0), keyDown: true)` and put the real character in the Unicode payload via `keyboardSetUnicodeString` — but `kVK_ANSI_A == 0x00`, so any client reading the *key code* rather than the payload saw `a` every single time. Citrix Viewer reads `NSEvent.characters`, which is why the same code worked there for years and broke the moment the target changed.
+
+  Confirmed by symbol inspection: Windows App 11.4.0 (`com.microsoft.rdc.macos`) imports `_UCKeyTranslate`, `_TISCopyCurrentKeyboardLayoutInputSource`, `_TISCopyCurrentKeyboardInputSource`, `_TISGetInputSourceProperty` and `_LMGetKbdType`, and carries a `KeycodeToScancodeTranslator` — it resolves scan codes from the key code itself. Citrix Viewer imports none of those. Splashtop Streamer imports both families, and the approach taken here is the one Splashtop uses.
+
+  The fix posts the **real virtual key code and real modifier key events** for the current keyboard layout, and keeps the Unicode payload attached. That is a strict superset: scan-code readers consume the key code, character readers consume the payload, so Windows App is fixed and Citrix is unaffected. This is also the documented contract — `CGEvent.h` states that "all keystrokes needed to generate a character must be entered, including SHIFT, CONTROL, OPTION, and COMMAND keys", with a worked example posting key code 56 for Shift.
+
+### Added
+- **`KeyboardLayoutMap`** — builds a reverse map (character → key code + modifiers) by brute-forcing `UCKeyTranslate` over all 128 key codes × four modifier combinations, since macOS has no API for "which key produces X?". Key code is the outer loop and writes are first-wins, so the main number row wins over the keypad for `0`-`9 . / - = * +`. Dead-key positions are detected (via `keyTranslateOptions = 0`, which reports them as length-0 + non-zero state) and excluded, so `´` never maps to a keystroke that produces nothing on real hardware. 183 characters map on a U.S. layout in about a millisecond.
+- **`KeystrokeEmitter`** — `KeyCodeEmitter` diffs modifier state so Shift stays down across a run of capitals instead of toggling per character, releases modifiers before Return so `"ABC\n"` never delivers Shift+Enter, creates each key-up *after* the hold so the event stream records an honest duration, and stamps `kCGKeyboardEventKeyboardType` and `kCGKeyboardEventAutorepeat` the way real hardware does. `LegacyUnicodeEmitter` preserves the previous behaviour as a fallback for when the layout is unavailable or an input method is active.
+- **Punctuation and accent folding before typing (on by default).** On a U.S. layout nearly everything an LLM emits beyond plain ASCII needs Option — em dash, en dash, ellipsis, bullet and all four curly quotes — and Option-modified scan codes reach Windows as **Alt+key**, a menu accelerator rather than a character. Curly quotes become straight, em dash becomes `--`, ellipsis becomes `...`, and accented letters fold to their base form (`café` → `cafe`), including the ones `.diacriticInsensitive` cannot decompose on its own (`ø ß ł œ æ đ þ`). The fold is driven by the *live* layout map rather than a hard-coded U.S. table, so it adapts instead of breaking on ABC-Extended or U.S. International, where the straight apostrophe is itself a dead key.
+- **`scripts/dev/main.swift`** — an offline validation harness that compiles against the real source files. `--check` runs layout assertions with no permissions needed; `--tap-verify` installs a `CGEventTap` that *swallows* every event and decodes the captured stream back to text, verifying key codes and modifiers with zero side effects; `--tap-cancel` cancels mid-run at several offsets and asserts nothing is left held. (This project has no working XCTest — the toolchain is Command Line Tools only, with no Xcode — so this harness is the test suite.)
+- **Settings → Stop & Type Method**, with a "Simplify punctuation before typing" toggle and a legacy-Unicode escape hatch.
+- **A menubar icon change while typing.** A long response can take a minute or more, and the popup is already closed by then, so the icon was the only feedback available.
+
+### Safety
+- **A held key can no longer be stranded on the remote machine.** The sleep between a key-down and its key-up is deliberately uninterruptible: a cancellable sleep there lets cancellation throw before the key-up posts, leaving the key physically down — which on a remote session autorepeats until something else releases it. Cancellation still shortens the hold, it just cannot strand a key. Unwind additionally releases a pending character key (not just modifiers), only clears held-modifier state for events that actually posted, and verifies against `CGEventSource.keyState` rather than trusting its own bookkeeping.
+- **Quitting mid-run drains held modifiers.** `defer` covers throw, return and cancellation, but not the process exiting — and a latched modifier on a remote machine has no recovery short of physically pressing the key.
+- **Cmd+[ can now abort a typing run.** `focusTargetApp` closes the popup *before* typing starts, so the cancel hotkey's `isShowing` guard made it a no-op for the entire run.
+- **`Cmd+]` is suppressed during a run**, and `≥` — which is `Option+.`, the Stop & Type binding itself on a U.S. layout — is folded away, so typing can no longer re-trigger the app's own hotkeys.
+- **Single-flight guard** on the typing service, the only object that outlives the popup. Two concurrent emitters would each track their own held-modifier state and silently corrupt each other's capitalisation.
+- **Silent failures are now reported.** A run that delivered nothing (Secure Input, or a revoked Accessibility grant) previously logged "text insertion completed successfully"; the key-down counter delta is now compared against what was posted. Cancelling no longer files a red error row.
+
+### Notes
+- Typing cadence is unchanged for the 50 and 80 wpm presets. The 120 wpm preset gains a floor of roughly 18 ms per character, because a 0 ms key hold with no gap before the next key-down is not something a real keyboard produces. Space-heavy text runs about 6% slower overall, because word pauses are deliberately *not* reduced by the key hold — that pause is the main reliability knob for remote sessions.
+- All persisted `citrixTyping*` settings keep their keys and meaning; no migration.
+
+---
+
 ## [0.3.30] — 2026-06-26
 
 ### Fixed

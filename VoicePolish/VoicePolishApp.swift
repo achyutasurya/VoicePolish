@@ -4,12 +4,35 @@ import KeyboardShortcuts
 @main
 struct VoicePolishApp: App {
     @State private var appState = AppState()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra("VoicePolish", systemImage: "mic.fill") {
+        MenuBarExtra("VoicePolish", systemImage: menuBarIcon) {
             SettingsView(appState: appState)
         }
         .menuBarExtraStyle(.window)
+    }
+
+    /// A typing run has no popup and no Stop button — this icon swap is the only
+    /// feedback the user gets that the app is mid-run.
+    private var menuBarIcon: String {
+        appState.textInsertionService.isTyping ? "keyboard.fill" : "mic.fill"
+    }
+}
+
+/// Exists solely to drain held modifier keys on quit.
+///
+/// `defer { emitter.unwind() }` covers throw, return and cancellation, but not
+/// the user picking Quit mid-run: the process exits and the defer never runs. A
+/// modifier latched on a remote machine has no recovery short of physically
+/// pressing the key.
+///
+/// The drain is gated on a run actually being in flight and touches only Shift
+/// and Option -- firing on every quit would desync a modifier the user happens
+/// to be holding while quitting.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        KeystrokeTypingEngine.drainModifiersOnTerminate()
     }
 }
 
@@ -112,6 +135,21 @@ final class AppState {
 
     func cancelRecordingFromHotkey() {
         let controller = RecordingPopupController.shared
+
+        // A keystroke typing run outlives its popup: focusTargetApp() closes the
+        // popup BEFORE typing starts, so `isShowing` is false for the whole run
+        // and the guard below would make Cmd+[ a no-op — leaving a 30-120s run
+        // with no way to stop it.
+        //
+        // Only take this branch when no popup is up. Otherwise a NEW recording
+        // started during a long run would have its own Cmd+[ stolen by the
+        // still-typing task, leaving that recording running and its popup open.
+        if textInsertionService.isTyping, !controller.isShowing {
+            logger.info("Cancel hotkey pressed — aborting in-flight typing run")
+            controller.cancelPipeline()
+            return
+        }
+
         guard controller.isShowing else { return }
         if audioRecorder.state == .recording || audioRecorder.state == .paused {
             logger.info("Cancel hotkey pressed — cancelling recording")

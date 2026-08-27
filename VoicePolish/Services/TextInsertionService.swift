@@ -1,10 +1,22 @@
 import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
+import KeyboardShortcuts
 
 @MainActor
+@Observable
 final class TextInsertionService {
     private let logger = LoggingService.shared
+    private let engine: TypingEngineProtocol
+
+    /// True while a keystroke typing run is in flight. Read by AppState so
+    /// Cmd+[ can abort a run whose popup has already closed, and by the menubar
+    /// icon.
+    private(set) var isTyping = false
+
+    init(engine: TypingEngineProtocol = KeystrokeTypingEngine()) {
+        self.engine = engine
+    }
 
     /// Insert text into the previously focused application.
     /// Call this AFTER closing the popup and re-activating the target app.
@@ -69,101 +81,122 @@ final class TextInsertionService {
         try await Task.sleep(nanoseconds: 500_000_000) // 500ms
     }
 
-    /// Insert text by typing characters as keyboard events.
-    /// This path bypasses clipboard dependencies and is intended for remote sessions (for example Citrix).
-    func typeTextForCitrix(_ text: String) async throws {
+    /// Insert text by typing it as real keyboard events.
+    ///
+    /// Used by Stop & Type for remote-desktop sessions where the clipboard is
+    /// unavailable. Posts the real virtual key code and real modifier key events
+    /// for the current layout, plus the Unicode payload -- a strict superset, so
+    /// scan-code clients (Microsoft Windows App, VNC, VMware) and character
+    /// clients (Citrix, Cocoa text views) are both satisfied.
+    @discardableResult
+    func typeTextAsKeystrokes(_ text: String) async throws -> KeystrokeTypingReport {
+        // Single-flight. `focusTargetApp` closes the popup BEFORE typing starts,
+        // so the per-view `popupState` guard in RecordingPopupView cannot see a
+        // run that is still in flight. Two KeyCodeEmitters would each track their
+        // own `heldFlags` and silently corrupt each other's capitalisation.
+        //
+        // This service is one instance per process (AppState owns it), so it is
+        // the only thing that outlives the popup.
+        guard !isTyping else {
+            logger.error("Stop & Type: a typing run is already in flight — ignoring (text is recoverable from History)")
+            return .busy
+        }
+        isTyping = true
+        KeystrokeTypingEngine.isRunInFlight = true
+        defer {
+            isTyping = false
+            KeystrokeTypingEngine.isRunInFlight = false
+        }
+
+        // Events posted at .cghidEventTap traverse the full Window Server
+        // pipeline, INCLUDING Carbon hot-key matching (KeyboardShortcuts uses
+        // RegisterEventHotKey). On a U.S. layout Option+. is "≥" — which is the
+        // Stop & Type binding itself, so typing that character would re-trigger
+        // the feature mid-run.
+        //
+        // .cancelRecording stays enabled on purpose: it is the abort path, and
+        // its Cmd+[ default is unreachable by us since we only ever post Shift
+        // and Option, never Command or Control.
+        // .stopAndType is the one that matters: on a U.S. layout its default
+        // Option+. IS the character U+2265, so typing a "greater than or equal"
+        // would re-trigger it. Carbon hot keys CONSUME the event, so the
+        // character would silently vanish from the output with no diagnostic.
+        // .toggleRecording is belt-and-braces (Cmd+] is unreachable by us).
+        KeyboardShortcuts.disable(.stopAndType, .toggleRecording)
+        defer { KeyboardShortcuts.enable(.stopAndType, .toggleRecording) }
+
         let normalizedText = Self.normalizeCitrixTypingText(text)
         guard !normalizedText.isEmpty else {
-            logger.info("Citrix typing: nothing to type (empty text)")
-            return
+            logger.info("Stop & Type: nothing to type (empty text)")
+            return KeystrokeTypingReport()
         }
 
-        let preset = AppSettings.shared.citrixTypingSpeedPreset
-        let interKeyDelayMs = max(0, AppSettings.shared.citrixTypingInterKeyDelayMs)
-        let newlineDelayMs = max(0, AppSettings.shared.citrixTypingNewlineDelayMs)
-        let chunkSize = max(1, AppSettings.shared.citrixTypingChunkSize)
-        let chunkPauseMs = max(0, AppSettings.shared.citrixTypingChunkPauseMs)
-        let wordPauseMinMs = max(0, AppSettings.shared.citrixTypingWordPauseMinMs)
-        let wordPauseMaxMs = max(wordPauseMinMs, AppSettings.shared.citrixTypingWordPauseMaxMs)
-        let charJitterMs = max(0, AppSettings.shared.citrixTypingCharJitterMs)
-        let chunks = Self.makeCitrixTypingChunks(from: normalizedText, chunkSize: chunkSize)
+        let settings = AppSettings.shared
+        let config = TypingConfig(
+            interKeyDelayMs: max(0, settings.citrixTypingInterKeyDelayMs),
+            newlineDelayMs: max(0, settings.citrixTypingNewlineDelayMs),
+            chunkSize: max(1, settings.citrixTypingChunkSize),
+            chunkPauseMs: max(0, settings.citrixTypingChunkPauseMs),
+            wordPauseMinMs: max(0, settings.citrixTypingWordPauseMinMs),
+            wordPauseMaxMs: max(max(0, settings.citrixTypingWordPauseMinMs), settings.citrixTypingWordPauseMaxMs),
+            charJitterMs: max(0, settings.citrixTypingCharJitterMs),
+            preferLegacyUnicode: settings.typingMethod == .legacyUnicode,
+            asciiFoldEnabled: settings.typingAsciiFoldEnabled
+        )
+        let preset = settings.citrixTypingSpeedPreset
+
+        // Build the layout map ONCE, here, and pass it to the engine. This is
+        // the single decision point: the fold needs the map, and letting the
+        // engine build a second one could diverge -- if this build failed while
+        // the engine's succeeded, the run would type with real keystrokes and no
+        // fold at all.
+        var textToType = normalizedText
+        var layoutSnapshot: KeyboardLayoutMap.Snapshot?
+        var layoutUnavailableReason: String?
+        if !config.preferLegacyUnicode {
+            do {
+                layoutSnapshot = try KeyboardLayoutMap.build()
+            } catch {
+                layoutUnavailableReason =
+                    "Keyboard layout unavailable (\(error.localizedDescription)); used Unicode typing."
+                logger.error("Stop & Type: \(layoutUnavailableReason!)")
+            }
+        }
+        if config.asciiFoldEnabled, let snapshot = layoutSnapshot, !snapshot.inputMethodActive {
+            textToType = TypingTextFolder.fold(normalizedText) { snapshot.requiresOptionOrIsUnreachable($0) }
+            if textToType != normalizedText {
+                logger.info("Stop & Type: folded \(normalizedText.count) chars -> \(textToType.count) chars for layout reachability")
+            }
+        }
 
         logger.info(
-            "Citrix typing: start (preset=\(preset.rawValue), \(normalizedText.count) chars, delay=\(interKeyDelayMs)ms, newlineDelay=\(newlineDelayMs)ms, chunkSize=\(chunkSize), chunkPause=\(chunkPauseMs)ms, wordPause=\(wordPauseMinMs)-\(wordPauseMaxMs)ms, jitter=±\(charJitterMs)ms)"
+            "Stop & Type: start (preset=\(preset.rawValue), \(textToType.count) chars, delay=\(config.interKeyDelayMs)ms, newlineDelay=\(config.newlineDelayMs)ms, chunkSize=\(config.chunkSize), chunkPause=\(config.chunkPauseMs)ms, wordPause=\(config.wordPauseMinMs)-\(config.wordPauseMaxMs)ms, jitter=±\(config.charJitterMs)ms, method=\(config.preferLegacyUnicode ? "legacyUnicode" : "auto"))"
         )
 
-        let startedAt = CFAbsoluteTimeGetCurrent()
-        var typedCharacters = 0
-
-        for (chunkIndex, chunk) in chunks.enumerated() {
-            for character in chunk {
-                try postCharacterForCitrix(character)
-                typedCharacters += 1
-
-                let delayMs = Self.nextDelayMsForCitrixCharacter(
+        let report = try await engine.type(
+            text: textToType,
+            config: config,
+            prebuiltLayout: layoutSnapshot,
+            layoutUnavailableReason: layoutUnavailableReason,
+            delayMs: { character in
+                Self.nextDelayMsForCitrixCharacter(
                     character,
-                    interKeyDelayMs: interKeyDelayMs,
-                    newlineDelayMs: newlineDelayMs,
-                    wordPauseMinMs: wordPauseMinMs,
-                    wordPauseMaxMs: wordPauseMaxMs,
-                    charJitterMs: charJitterMs
+                    interKeyDelayMs: config.interKeyDelayMs,
+                    newlineDelayMs: config.newlineDelayMs,
+                    wordPauseMinMs: config.wordPauseMinMs,
+                    wordPauseMaxMs: config.wordPauseMaxMs,
+                    charJitterMs: config.charJitterMs
                 )
-                if delayMs > 0 {
-                    try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
-                }
-            }
+            },
+            onProgress: { _ in }
+        )
 
-            let isLastChunk = chunkIndex == chunks.count - 1
-            if !isLastChunk && chunkPauseMs > 0 {
-                try await Task.sleep(nanoseconds: UInt64(chunkPauseMs) * 1_000_000)
-            }
-        }
-
-        let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
-        logger.info("Citrix typing: complete (\(typedCharacters) chars in \(String(format: "%.2f", elapsed))s)")
+        logger.info(
+            "Stop & Type: complete (\(report.charactersTyped) chars in \(String(format: "%.2f", report.elapsedSeconds))s, method=\(report.methodUsed.rawValue), delivered=\(report.deliveredKeyDownCount)/\(report.expectedKeyDownCount), layout=\(report.layoutSummary), inputSource=\(report.inputSourceAtTypingStart))"
+        )
+        return report
     }
 
-    private func postCharacterForCitrix(_ character: Character) throws {
-        switch character {
-        case "\n":
-            try postVirtualKey(CGKeyCode(kVK_Return))
-            return
-        case "\t":
-            try postVirtualKey(CGKeyCode(kVK_Tab))
-            return
-        default:
-            break
-        }
-
-        guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(0), keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(0), keyDown: false)
-        else {
-            logger.error("Citrix typing: failed to create unicode CGEvent")
-            throw TextInsertionError.eventCreationFailed
-        }
-
-        let utf16Units = Array(String(character).utf16)
-        utf16Units.withUnsafeBufferPointer { pointer in
-            guard let baseAddress = pointer.baseAddress else { return }
-            keyDown.keyboardSetUnicodeString(stringLength: pointer.count, unicodeString: baseAddress)
-            keyUp.keyboardSetUnicodeString(stringLength: pointer.count, unicodeString: baseAddress)
-        }
-
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
-    }
-
-    private func postVirtualKey(_ keyCode: CGKeyCode) throws {
-        guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false)
-        else {
-            logger.error("Citrix typing: failed to create virtual key CGEvent")
-            throw TextInsertionError.eventCreationFailed
-        }
-
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
-    }
 
     nonisolated static func normalizeCitrixTypingText(_ text: String) -> String {
         text

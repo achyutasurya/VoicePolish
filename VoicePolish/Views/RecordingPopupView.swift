@@ -468,14 +468,104 @@ struct RecordingPopupView: View {
             case .normal:
                 logger.info("\(logPrefix): inserting text (\(responseText.count) chars) via clipboard paste...")
                 try await appState.textInsertionService.insertText(responseText)
+                logger.info("\(logPrefix): text insertion completed successfully")
             case .citrixTyping:
-                logger.info("\(logPrefix): inserting text (\(responseText.count) chars) via Citrix typing...")
-                try await appState.textInsertionService.typeTextForCitrix(responseText)
+                logger.info("\(logPrefix): inserting text (\(responseText.count) chars) via keystroke typing...")
+                let report = try await appState.textInsertionService.typeTextAsKeystrokes(responseText)
+                reportTypingOutcome(report, logPrefix: logPrefix)
             }
-            logger.info("\(logPrefix): text insertion completed successfully")
+        } catch is CancellationError {
+            // The user aborted with the cancel hotkey. A normal path now that a
+            // typing run can be interrupted — not an error, and it must not land
+            // a red row in the Errors tab.
+            logger.info("\(logPrefix): typing cancelled by user")
         } catch {
             logger.error("\(logPrefix): text insertion failed - \(error)")
             appState.errorService.addError(source: .textInsertion, severity: .error, message: "Text insertion failed", details: error.localizedDescription)
+        }
+    }
+
+    /// Raises ErrorService entries once per RUN, never per character.
+    ///
+    /// `addError` writes the whole 200-entry array to disk atomically on the
+    /// MainActor, so it must never be called from inside the typing loop. A run
+    /// can legitimately raise more than one entry when several distinct things
+    /// went wrong (e.g. fell back to Unicode AND degraded some characters).
+    private func reportTypingOutcome(_ report: KeystrokeTypingReport, logPrefix: String) {
+        let logger = appState.logger
+
+        if report.wasBusy {
+            appState.errorService.addError(
+                source: .textInsertion, severity: .warning,
+                message: "A typing run was already in progress",
+                details: "This dictation was not typed. The text is saved in the History tab.",
+                code: "text_insertion.busy"
+            )
+            return
+        }
+
+        logger.info("\(logPrefix): text insertion completed (\(report.charactersTyped) chars)")
+
+        if let reason = report.methodOverrideReason {
+            logger.info("\(logPrefix): \(reason)")
+            appState.errorService.addError(
+                source: .textInsertion, severity: .warning,
+                message: "Used legacy Unicode typing",
+                details: reason, actionable: false, transient: true,
+                code: "text_insertion.layout_unavailable"
+            )
+        }
+
+        // Delivery is judged from Accessibility trust, NOT from the key-down
+        // counter: measured on macOS 26, posting 10 key-downs moved
+        // CGEventSourceCounterForEventType by 0 on both state IDs while a tap
+        // confirmed all 10 were emitted. A counter-based check would raise a red
+        // error on every successful run. The counts are logged above instead.
+        if report.deliveredNothing {
+            appState.errorService.addError(
+                source: .textInsertion, severity: .error,
+                message: "No keystrokes were delivered",
+                details: "VoicePolish does not have Accessibility permission, so every keystroke was silently discarded. Open System Settings → Privacy & Security → Accessibility and enable VoicePolish.",
+                code: "text_insertion.no_events_delivered"
+            )
+        } else if report.secureInputActive {
+            appState.errorService.addError(
+                source: .textInsertion, severity: .warning,
+                message: "Secure Input is active",
+                details: "Keystrokes may be blocked by another app's secure keyboard entry.",
+                code: "text_insertion.secure_input_active"
+            )
+        }
+
+        if !report.degradedCharacters.isEmpty {
+            let unique = Array(Set(report.degradedCharacters)).map(String.init).sorted().joined(separator: " ")
+            logger.info("\(logPrefix): \(report.degradedCharacters.count) characters could not be typed: \(unique)")
+            appState.errorService.addError(
+                source: .textInsertion, severity: .warning,
+                message: "Some characters could not be typed",
+                details: "\(report.degradedCharacters.count) character(s) have no key on your layout and were typed as spaces: \(unique)",
+                actionable: false, transient: true,
+                code: "text_insertion.degraded_characters"
+            )
+        }
+
+        if !report.stuckModifiers.isEmpty || report.stuckKeyCode != nil {
+            appState.errorService.addError(
+                source: .textInsertion, severity: .warning,
+                message: "A key may still be held down",
+                details: "Press and release Shift and Option to clear it.",
+                code: "text_insertion.modifier_stuck"
+            )
+        }
+
+        if report.modifiersForceCleared {
+            logger.info("\(logPrefix): force-released a latched modifier before typing")
+        }
+        if report.capsLockCleared {
+            logger.info("\(logPrefix): cleared Caps Lock before typing")
+        }
+        if !report.foldedCharacters.isEmpty {
+            logger.info("\(logPrefix): \(report.foldedCharacters.count) characters were ASCII-folded")
         }
     }
 

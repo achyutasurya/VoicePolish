@@ -94,6 +94,8 @@ final class AppSettings {
     private static let keyCitrixWordPauseMinMs = "citrixTypingWordPauseMinMs"
     private static let keyCitrixWordPauseMaxMs = "citrixTypingWordPauseMaxMs"
     private static let keyCitrixCharJitterMs = "citrixTypingCharJitterMs"
+    private static let keyTypingMethod = "typingMethod"
+    private static let keyTypingAsciiFold = "typingAsciiFold"
 
     static let defaultSystemPrompt = """
         You are a speech-to-text cleanup assistant. You receive raw transcriptions from voice recordings. \
@@ -307,6 +309,65 @@ final class AppSettings {
             return max(0, defaults.integer(forKey: Self.keyCitrixCharJitterMs))
         }
         set { UserDefaults.standard.set(max(0, newValue), forKey: Self.keyCitrixCharJitterMs) }
+    }
+
+    /// How Stop & Type synthesises keystrokes.
+    ///
+    /// `.automatic` posts real virtual key codes plus real modifier key events
+    /// for the current layout, falling back to the legacy Unicode payload when
+    /// the layout is unavailable or an input method is active.
+    /// `.legacyUnicode` forces the pre-0.3.31 behaviour (key code 0 + payload),
+    /// which works for Citrix and Cocoa text views but arrives as "a" in any
+    /// scan-code client such as Microsoft Windows App.
+    enum TypingMethod: String, CaseIterable, Identifiable {
+        case automatic
+        case legacyUnicode
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .automatic: return "Real keystrokes (recommended)"
+            case .legacyUnicode: return "Unicode only (legacy)"
+            }
+        }
+
+        var detailText: String {
+            switch self {
+            case .automatic:
+                return "Sends the real key and modifier presses for your keyboard layout. Required for Windows App / RDP; also works in Citrix."
+            case .legacyUnicode:
+                return "Pre-0.3.31 behaviour. Works in Citrix and normal Mac apps, but every character arrives as \"a\" in Windows App."
+            }
+        }
+    }
+
+    var typingMethod: TypingMethod {
+        get {
+            guard let rawValue = UserDefaults.standard.string(forKey: Self.keyTypingMethod),
+                  let method = TypingMethod(rawValue: rawValue)
+            else {
+                return .automatic
+            }
+            return method
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Self.keyTypingMethod) }
+    }
+
+    /// Rewrite characters that need Option (curly quotes, em dash, ellipsis) and
+    /// accented letters into plain ASCII before typing.
+    ///
+    /// Defaults to true: on a US layout nearly everything an LLM emits beyond
+    /// plain ASCII needs Option, and Option-modified scan codes reach Windows as
+    /// Alt+key -- a menu accelerator, not a character.
+    var typingAsciiFoldEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: Self.keyTypingAsciiFold) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: Self.keyTypingAsciiFold)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: Self.keyTypingAsciiFold) }
     }
 
     var citrixTypingSpeedPreset: CitrixTypingSpeedPreset {

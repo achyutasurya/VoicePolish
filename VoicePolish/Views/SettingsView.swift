@@ -212,7 +212,7 @@ struct CitrixTypingPresetPickerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Citrix Typing Speed")
+            Text("Stop & Type Speed")
                 .font(.subheadline.bold())
 
             Picker("", selection: $selectedPreset) {
@@ -244,6 +244,51 @@ struct CitrixTypingPresetPickerView: View {
         let settings = appState.settings
         effectiveTimings =
             "Current timings: key \(settings.citrixTypingInterKeyDelayMs)ms • newline \(settings.citrixTypingNewlineDelayMs)ms • chunk \(settings.citrixTypingChunkSize) • pause \(settings.citrixTypingChunkPauseMs)ms • word pause \(settings.citrixTypingWordPauseMinMs)-\(settings.citrixTypingWordPauseMaxMs)ms • jitter ±\(settings.citrixTypingCharJitterMs)ms"
+    }
+}
+
+struct StopAndTypeMethodView: View {
+    @Bindable var appState: AppState
+
+    // @Observable does not track UserDefaults-backed computed properties, so
+    // mirror into @State and write back on change (see AppSettings.swift:83-85).
+    @State private var selectedMethod: AppSettings.TypingMethod = .automatic
+    @State private var asciiFoldEnabled = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Stop & Type Method")
+                .font(.subheadline.bold())
+
+            Picker("", selection: $selectedMethod) {
+                ForEach(AppSettings.TypingMethod.allCases) { method in
+                    Text(method.displayName).tag(method)
+                }
+            }
+            .labelsHidden()
+            .onChange(of: selectedMethod) { _, newValue in
+                appState.settings.typingMethod = newValue
+            }
+
+            Text(selectedMethod.detailText)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Toggle("Simplify punctuation before typing", isOn: $asciiFoldEnabled)
+                .font(.caption)
+                .padding(.top, 4)
+                .onChange(of: asciiFoldEnabled) { _, newValue in
+                    appState.settings.typingAsciiFoldEnabled = newValue
+                }
+
+            Text("Converts curly quotes, em dashes and ellipses to plain ASCII. On a US layout those all need the Option key, which remote desktops receive as Alt — a menu shortcut rather than a character.")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .onAppear {
+            selectedMethod = appState.settings.typingMethod
+            asciiFoldEnabled = appState.settings.typingAsciiFoldEnabled
+        }
     }
 }
 
@@ -374,7 +419,7 @@ struct SettingsView: View {
                         .font(.subheadline.bold())
                     KeyboardShortcuts.Recorder("", name: .stopAndType)
                 }
-                Text("Stops recording and types the result character-by-character (works in Citrix / virtual desktops where paste is blocked). Does nothing if no recording is in progress.")
+                Text("Stops recording and types the result key by key, like a real keyboard — for Windows App / RDP, Citrix and other remote desktops where paste is blocked. Does nothing if no recording is in progress.")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
@@ -470,7 +515,9 @@ struct SettingsView: View {
 
                 Divider()
 
-                // MARK: - Citrix Typing Preset
+                // MARK: - Stop & Type
+                StopAndTypeMethodView(appState: appState)
+
                 CitrixTypingPresetPickerView(appState: appState)
 
                 Divider()
