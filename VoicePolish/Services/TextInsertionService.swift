@@ -122,8 +122,12 @@ final class TextInsertionService {
         // would re-trigger it. Carbon hot keys CONSUME the event, so the
         // character would silently vanish from the output with no diagnostic.
         // .toggleRecording is belt-and-braces (Cmd+] is unreachable by us).
-        KeyboardShortcuts.disable(.stopAndType, .toggleRecording)
-        defer { KeyboardShortcuts.enable(.stopAndType, .toggleRecording) }
+        // The user-chosen alternates (v0.3.33) can be anything, so they follow the
+        // same rule: see HotkeyAction.namesToSuspendWhileTyping. Snapshot the list so
+        // the defer re-enables exactly what was disabled.
+        let suspendedHotkeys = HotkeyAction.namesToSuspendWhileTyping
+        KeyboardShortcuts.disable(suspendedHotkeys)
+        defer { KeyboardShortcuts.enable(suspendedHotkeys) }
 
         let normalizedText = Self.normalizeCitrixTypingText(text)
         guard !normalizedText.isEmpty else {

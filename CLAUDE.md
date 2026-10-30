@@ -35,7 +35,9 @@ Hotkey (Cmd+]) → auto-start recording → hotkey again (or Stop button) → De
 
 ### Key Components
 
-**AppState** (`VoicePolishApp.swift`) — `@MainActor @Observable` class that owns all services, registers the global hotkey listener, and coordinates the recording popup. Recording starts in `toggleRecordingPopup()` BEFORE showing the popup to eliminate SwiftUI rendering delay. The `shouldStopAndSend` flag bridges hotkey events to the SwiftUI view via `.onChange`.
+**AppState** (`VoicePolishApp.swift`) — `@MainActor @Observable` class that owns all services, registers the global hotkey listener, and coordinates the recording popup. Recording starts in `startRecording()` (called by `toggleRecordingPopup()`) BEFORE showing the popup to eliminate SwiftUI rendering delay. The `shouldStopAndSend` / `shouldStopAndType` flags bridge hotkey and menubar events to the SwiftUI view via `.onChange`. Hotkeys and the menubar control bar share the same entry points: `startRecording()`, `requestStopAndPaste()`, `requestStopAndType()`, `discard()`. `controlState` (idle / recording / busy / typing) is derived from the observable `isPopupShowing` mirror, recorder state and `isTyping`.
+
+**RecordingControlBar** (`Views/RecordingControlBar.swift`) — Record / Stop & Paste / Stop & Type / Discard at the top of the menubar window. Closes the MenuBarExtra window (via its hosting `NSWindow`) before acting, and hands focus back to the target app after Record/Discard.
 
 **RecordingPopupView** (`Views/RecordingPopupView.swift`) — Contains both `RecordingPopupController` (NSPanel management) and the SwiftUI view. The NSPanel uses `.nonActivatingPanel` style mask so it does NOT steal focus from the target text field. The view drives a state machine: recording → transcribing → processing → done/error. The `stopAndSend()` method orchestrates the entire pipeline. Note: the popup opens with recording already in progress (popupState starts as `.recording`).
 
@@ -64,6 +66,8 @@ The `AudioRecorder` engine lifecycle uses a state machine (`stopped → warmingU
 
 ### Focus Management
 
+Clicking the menubar window activates VoicePolish, so `showPopup` cannot trust `frontmostApplication` as the paste target in that case. `FrontmostAppTracker` (`Utilities/FrontmostAppTracker.swift`) records the last non-VoicePolish app from `NSWorkspace.didActivateApplicationNotification`; `showPopup` uses it when VoicePolish itself is frontmost.
+
 After processing, the app must re-activate the previously focused app before pasting. `RecordingPopupController.previousApp` captures the frontmost app at popup open time. `stopAndSend()` closes the popup, calls `NSApp.deactivate()`, activates the target app, waits 500ms, verifies focus, and retries once if the wrong app got focus.
 
 ### Text Insertion
@@ -76,9 +80,12 @@ Accessibility permission is tied to the app's code signature in the TCC database
 
 ## Single External Dependency
 
-`KeyboardShortcuts` (sindresorhus, v2+) — global hotkey registration. Hotkey names are defined in `Utilities/HotkeyManager.swift`:
-- `.toggleRecording` — defaults to Cmd+] (start/stop recording)
-- `.cancelRecording` — defaults to Cmd+[ (cancel recording without sending)
+`KeyboardShortcuts` (sindresorhus, pinned 1.15.0) — global hotkey registration. Hotkey names are defined in `Utilities/HotkeyManager.swift`; `HotkeyAction` groups each action's primary and alternate:
+- `.toggleRecording` / `.toggleRecordingAlt` — defaults to Cmd+] / unset (start recording, or stop & paste)
+- `.cancelRecording` / `.cancelRecordingAlt` — defaults to Cmd+[ / unset (discard recording, pipeline or typing run)
+- `.stopAndType` / `.stopAndTypeAlt` — defaults to Option+. / unset (stop and type key by key)
+
+Settings rejects a binding already used by another action (one keypress would fire both). During a typing run `HotkeyAction.namesToSuspendWhileTyping` is disabled so typed characters can't trigger hotkeys.
 
 ## Versioning
 

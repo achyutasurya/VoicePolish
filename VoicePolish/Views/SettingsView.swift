@@ -304,6 +304,10 @@ struct SettingsView: View {
     @State private var archiveSuccessfulRecordings: Bool = true
     @State private var retentionIndex: Int = 0
 
+    /// Inline (not `.alert()`, which dismisses the MenuBarExtra window) warning shown
+    /// when a hotkey was rejected for duplicating another action's binding.
+    @State private var hotkeyConflictMessage: String?
+
     private let retentionChoices: [(label: String, policy: AudioRetentionPolicy)] = [
         ("7 days", .maxAgeDays(7)),
         ("30 days", .maxAgeDays(30)),
@@ -335,6 +339,10 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            RecordingControlBar(appState: appState)
+
+            Divider()
+
             // Tab bar
             HStack(spacing: 0) {
                 tabButton("Settings", systemImage: "gear", tab: .settings)
@@ -375,6 +383,27 @@ struct SettingsView: View {
         }
     }
 
+    /// KeyboardShortcuts only rejects system / main-menu clashes, not two of our own
+    /// names sharing a combo — which would fire both handlers on one keypress (e.g.
+    /// Stop & Paste and Discard together). Undo such a binding and say why.
+    private func validateHotkey(_ shortcut: KeyboardShortcuts.Shortcut?, for name: KeyboardShortcuts.Name) {
+        guard let shortcut else {
+            hotkeyConflictMessage = nil
+            return
+        }
+        let clash = HotkeyAction.allRecordingHotkeys.first {
+            $0 != name && KeyboardShortcuts.getShortcut(for: $0) == shortcut
+        }
+        if let clash {
+            KeyboardShortcuts.setShortcut(nil, for: name)
+            let owner = HotkeyAction.action(for: clash)?.title ?? "another action"
+            hotkeyConflictMessage = "\(shortcut) is already used by \(owner)."
+            appState.logger.info("Rejected hotkey \(shortcut) for \(name.rawValue): already bound to \(clash.rawValue)")
+        } else {
+            hotkeyConflictMessage = nil
+        }
+    }
+
     private func tabButton(_ title: String, systemImage: String, tab: SettingsTab) -> some View {
         Button {
             selectedTab = tab
@@ -403,23 +432,31 @@ struct SettingsView: View {
 
                 Divider()
 
-                // MARK: - Hotkey
-                HStack {
-                    Text("Recording Hotkey:")
-                        .font(.subheadline.bold())
-                    KeyboardShortcuts.Recorder("", name: .toggleRecording)
+                // MARK: - Hotkeys
+                Text("Hotkeys")
+                    .font(.subheadline.bold())
+                ForEach(HotkeyAction.allCases, id: \.self) { action in
+                    HStack {
+                        Text("\(action.title):")
+                            .font(.subheadline)
+                            .frame(width: 150, alignment: .leading)
+                        KeyboardShortcuts.Recorder(for: action.primary) { shortcut in
+                            validateHotkey(shortcut, for: action.primary)
+                        }
+                        Text("or")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        KeyboardShortcuts.Recorder(for: action.alternate) { shortcut in
+                            validateHotkey(shortcut, for: action.alternate)
+                        }
+                    }
                 }
-                HStack {
-                    Text("Cancel Hotkey:")
-                        .font(.subheadline.bold())
-                    KeyboardShortcuts.Recorder("", name: .cancelRecording)
+                if let hotkeyConflictMessage {
+                    Text(hotkeyConflictMessage)
+                        .font(.caption)
+                        .foregroundColor(.red)
                 }
-                HStack {
-                    Text("Stop & Type Hotkey:")
-                        .font(.subheadline.bold())
-                    KeyboardShortcuts.Recorder("", name: .stopAndType)
-                }
-                Text("Stops recording and types the result key by key, like a real keyboard — for Windows App / RDP, Citrix and other remote desktops where paste is blocked. Does nothing if no recording is in progress.")
+                Text("The second hotkey is optional — bind a spare key (e.g. F13) for remote-desktop windows that capture the first one. Stop & Type types the result key by key, like a real keyboard — for Windows App / RDP, Citrix and other remote desktops where paste is blocked. Stop & Type does nothing if no recording is in progress.")
                     .font(.caption)
                     .foregroundColor(.secondary)
 

@@ -32,6 +32,16 @@ Claude Code can update the `VERSION` file and this changelog when asked.
 
 ---
 
+## [0.3.33] — 2026-10-30
+
+### Added
+- **Recording controls in the menubar window.** A control bar at the top of the menubar window has **Record**, **Stop & Paste**, **Stop & Type** and **Discard**, so the whole pipeline can be driven without hotkeys. Buttons enable by state (idle → Record; recording → Stop & Paste / Stop & Type / Discard; transcribing or typing → Discard), a status line shows the live recording time, and tooltips show the bound hotkeys. Each button calls the same `AppState` entry point as its hotkey. Record and Discard close the window and hand focus straight back to the app you were in; a missing API key shows inline instead of silently doing nothing.
+- **A second, optional hotkey for every action** (Record / Stop & Paste, Discard, Stop & Type). Bind a spare key such as F13 for remote-desktop windows that capture the primary combo. Binding a combo that another action already uses is rejected with an inline warning — one keypress would otherwise fire both handlers.
+
+### Fixed
+- **A recording started from the menubar would have pasted into VoicePolish itself.** Clicking the menubar window activates VoicePolish, so the popup's "frontmost app at open time" target was our own process. A new `FrontmostAppTracker` remembers the last *other* active app and is used as the paste target when VoicePolish is frontmost.
+- **Alternate hotkeys are suspended during a Stop & Type run** like their primaries, so a typed character can never trigger them. Discard stays live as the abort path unless its binding is reachable by typing (no Command/Control, not a function key), in which case typing would abort the run.
+
 ## [0.3.32] — 2026-08-27
 
 ### Fixed

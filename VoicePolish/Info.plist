@@ -13,9 +13,9 @@
     <key>CFBundleDisplayName</key>
     <string>VoicePolish</string>
     <key>CFBundleVersion</key>
-    <string>37</string>
+    <string>38</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.3.32</string>
+    <string>0.3.33</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>

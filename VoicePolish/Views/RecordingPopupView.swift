@@ -37,7 +37,17 @@ final class RecordingPopupController: NSObject, NSWindowDelegate {
         // Remember the currently focused app so we can re-activate it before pasting.
         // This is set ONLY once when popup first opens to prevent race conditions
         // from rapid hotkey presses overwriting the target app.
-        previousApp = NSWorkspace.shared.frontmostApplication
+        //
+        // A menubar Record click activates VoicePolish itself, so when we are frontmost
+        // fall back to the last other app the user was in — otherwise the result would be
+        // pasted into our own (closed) menubar window, i.e. nowhere.
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        if let frontmost, FrontmostAppTracker.isSelf(frontmost) {
+            previousApp = FrontmostAppTracker.shared.lastExternalApp
+            appState.logger.info("showPopup: VoicePolish is frontmost — target app from tracker: \(previousApp?.localizedName ?? "nil") (pid: \(previousApp?.processIdentifier ?? 0))")
+        } else {
+            previousApp = frontmost
+        }
 
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 440, height: 220),
@@ -73,6 +83,7 @@ final class RecordingPopupController: NSObject, NSWindowDelegate {
 
         self.appState = appState
         self.panel = panel
+        appState.isPopupShowing = true
     }
 
     /// Programmatic close (in-app Cancel buttons, hotkeys, end of delivery). Triggers
@@ -109,6 +120,7 @@ final class RecordingPopupController: NSObject, NSWindowDelegate {
             appState.settings.popupY = frame.origin.y
         }
         self.panel = nil
+        appState?.isPopupShowing = false
     }
 }
 
